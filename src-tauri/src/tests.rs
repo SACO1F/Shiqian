@@ -1,0 +1,690 @@
+use crate::{backup, db::Store, fsops, model::*};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::{json, Value};
+use std::{fs, path::Path, time::Instant};
+
+#[test]
+#[ignore = "Requires an observed visible Windows Shell fixture at SHIQIAN_PROBE_X/Y"]
+fn native_shell_target_probe() {
+    let x = std::env::var("SHIQIAN_PROBE_X").unwrap().parse().unwrap();
+    let y = std::env::var("SHIQIAN_PROBE_Y").unwrap().parse().unwrap();
+    let expected = std::env::var("SHIQIAN_PROBE_PATH").unwrap();
+    let result = crate::shell_target::file_at_point(x, y);
+    if expected == "__reject__" {
+        assert!(result.is_err());
+        println!("Rejected non-file Shell target");
+        return;
+    }
+    let actual = result.unwrap();
+    assert_eq!(
+        fsops::canonical_display(Path::new(&actual)).unwrap(),
+        fsops::canonical_display(Path::new(&expected)).unwrap()
+    );
+    println!("Resolved exact native Shell file: {actual}");
+}
+
+#[test]
+fn floating_presets_initialize_once_and_preserve_empty_choice() {
+    let mut f = Fixture::new();
+    let existing = f.store.create_tag("灵感").unwrap();
+    let presets = f.store.floating_presets().unwrap();
+    assert_eq!(presets["ids"].as_array().unwrap().len(), 4);
+    assert!(presets["ids"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(existing.id)));
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], presets["ids"]);
+    f.store.save_floating_presets(&[]).unwrap();
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!([]));
+    assert!(f.store.save_floating_presets(&["missing".into()]).is_err());
+    assert!(f
+        .store
+        .save_floating_presets(&[existing.id.clone(), existing.id])
+        .is_err());
+}
+
+#[test]
+fn floating_annotation_imports_and_is_idempotent_undo_preserves_other_tags() {
+    let mut f = Fixture::new();
+    let old = f.store.create_tag("已有标签").unwrap();
+    let new = f.store.create_tag("浮窗新标签").unwrap();
+    let file = f.add("中文 图片.png", b"fixture");
+    f.tag(&[&file.id], &[&old.id]);
+    let v = json!({"tagId":new.id,"paths":[file.path,file.path],"ids":[file.id]});
+    assert_eq!(f.store.annotate(&v).unwrap()["applied"], 1);
+    let version = f.store.file(&file.id).unwrap().version;
+    assert_eq!(f.store.annotate(&v).unwrap()["applied"], 0);
+    assert_eq!(f.store.file(&file.id).unwrap().version, version);
+    f.store.undo_last().unwrap();
+    let after = f.store.file(&file.id).unwrap();
+    assert_eq!(after.tags.len(), 1);
+    assert_eq!(after.tags[0].id, old.id);
+    assert!(Path::new(&after.path).exists());
+    let external = f.files.join("外部文件.jpg");
+    fs::write(&external, b"new").unwrap();
+    let result = f
+        .store
+        .annotate(&json!({"tagId":new.id,"paths":[external]}))
+        .unwrap();
+    assert_eq!(result["imported"], 1);
+    assert_eq!(result["applied"], 1);
+}
+
+#[test]
+fn floating_annotation_failure_rolls_back_imports_and_rejects_bad_targets() {
+    let mut f = Fixture::new();
+    let tag = f.store.create_tag("标注").unwrap();
+    let path = f.files.join("待加入.txt");
+    fs::write(&path, b"abc").unwrap();
+    assert!(f
+        .store
+        .annotate(&json!({"tagId":tag.id,"paths":[path],"ids":["missing-record"]}))
+        .is_err());
+    assert_eq!(f.query(q())["total"], 0);
+    assert!(f.store.undo.is_empty());
+    for v in [
+        json!({"tagId":"missing","paths":[path]}),
+        json!({"tagId":tag.id,"paths":[f.files]}),
+        json!({"tagId":tag.id}),
+        json!({"tagId":tag.id,"paths":[f.store.root.join("metadata.sqlite")]}),
+    ] {
+        assert!(f.store.annotate(&v).is_err());
+    }
+    assert!(path.exists());
+}
+
+#[test]
+fn floating_presets_follow_rename_delete_and_backup_restore() {
+    let mut f = Fixture::new();
+    let tag = f.store.create_tag("我的预设").unwrap();
+    f.store.save_floating_presets(&[tag.id.clone()]).unwrap();
+    let backup = f.files.join("presets.sqtagbackup");
+    f.store.export_backup(&backup).unwrap();
+    f.store
+        .mutate(
+            "tags.rename",
+            &json!({"id":tag.id,"version":tag.version,"name":"重命名预设"}),
+        )
+        .unwrap();
+    assert_eq!(
+        f.store.floating_presets().unwrap()["tags"][0]["name"],
+        "重命名预设"
+    );
+    f.store
+        .mutate("tags.delete", &json!({"id":tag.id,"version":tag.version+1}))
+        .unwrap();
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!([]));
+    f.store.restore_backup(&backup).unwrap();
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!([tag.id]));
+}
+
+struct Fixture {
+    store: Store,
+    _dir: tempfile::TempDir,
+    files: std::path::PathBuf,
+}
+impl Fixture {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let files = dir.path().join("原文件");
+        fs::create_dir(&files).unwrap();
+        let store = Store::open(&dir.path().join("library")).unwrap();
+        Self {
+            _dir: dir,
+            store,
+            files,
+        }
+    }
+    fn add(&mut self, name: &str, content: &[u8]) -> FileRecord {
+        let path = self.files.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, content).unwrap();
+        self.store
+            .add_file(&fsops::inspect(&path).unwrap())
+            .unwrap();
+        let id: String = self
+            .store
+            .conn
+            .query_row(
+                "SELECT id FROM files WHERE path=?",
+                [fsops::canonical_display(&path).unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        self.store.file(&id).unwrap()
+    }
+    fn patch(&mut self, action: &str, ids: &[&str], extra: Value) -> Result<Value> {
+        let mut v = extra;
+        v["ids"] = json!(ids);
+        v["versions"] = json!({});
+        for id in ids {
+            v["versions"][id] = json!(self.store.file(id)?.version);
+        }
+        self.store.mutate(action, &v)
+    }
+    fn tag(&mut self, ids: &[&str], tags: &[&str]) {
+        self.patch("files.tags", ids, json!({"add":tags})).unwrap();
+    }
+    fn query(&self, q: Query) -> Value {
+        self.store.query(&q).unwrap()
+    }
+}
+fn q() -> Query {
+    Query {
+        limit: 100,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn cache_identity_changes_even_with_same_size_and_time() {
+    let mut f = Fixture::new();
+    let a = f.add("a.png", b"synthetic");
+    let mut replacement = a.clone();
+    replacement.identity = "different-filesystem-object".into();
+    assert_ne!(
+        fsops::cache_path(&f.store.root, &a, false),
+        fsops::cache_path(&f.store.root, &replacement, false)
+    );
+}
+
+#[test]
+fn long_utf8_preview_does_not_split_a_character() {
+    let mut f = Fixture::new();
+    let content = "中".repeat(70_000);
+    let a = f.add("long.txt", content.as_bytes());
+    let result = fsops::preview(&f.store.root, &a, true).unwrap();
+    assert_eq!(result["truncated"], true);
+    assert_eq!(
+        result["text"].as_str().unwrap(),
+        "中".repeat((200 * 1024) / 3)
+    );
+}
+
+#[test]
+fn unicode_tag_identity_and_validation() {
+    let mut f = Fixture::new();
+    let a = f.store.create_tag("  Straße  ").unwrap();
+    assert_eq!(a.id, f.store.create_tag("STRASSE").unwrap().id);
+    let b = f.store.create_tag("Café").unwrap();
+    assert_eq!(b.id, f.store.create_tag("Cafe\u{301}").unwrap().id);
+    for invalid in ["", "  ", "a\nb"] {
+        assert!(f.store.create_tag(invalid).is_err());
+    }
+    assert!(f.store.create_tag(&"标".repeat(41)).is_err());
+    assert!(f.store.create_tag(&"👨‍👩‍👧".repeat(40)).is_ok());
+}
+#[test]
+fn duplicate_import_is_idempotent() {
+    let mut f = Fixture::new();
+    let a = f.add("中文 空格.txt", b"hello");
+    let m = fsops::inspect(Path::new(&a.path)).unwrap();
+    assert!(!f.store.add_file(&m).unwrap());
+    assert_eq!(f.query(q())["total"], 1);
+    assert_eq!(f.store.file(&a.id).unwrap().version, 1);
+}
+#[test]
+fn copies_at_different_paths_are_separate() {
+    let mut f = Fixture::new();
+    f.add("a.txt", b"same");
+    f.add("b.txt", b"same");
+    assert_eq!(f.query(q())["total"], 2);
+}
+#[test]
+fn remove_readd_preserves_identity_and_annotation() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"source");
+    let t = f.store.create_tag("用途").unwrap();
+    f.tag(&[&a.id], &[&t.id]);
+    f.store
+        .save_note(&json!({"id":a.id,"text":"note","version":0}))
+        .unwrap();
+    f.patch("files.remove", &[&a.id], json!({})).unwrap();
+    assert!(Path::new(&a.path).exists());
+    assert_eq!(f.query(q())["total"], 0);
+    assert!(f
+        .store
+        .add_file(&fsops::inspect(Path::new(&a.path)).unwrap())
+        .unwrap());
+    let r = f.store.file(&a.id).unwrap();
+    assert_eq!(r.note, "note");
+    assert_eq!(r.tags[0].id, t.id);
+    assert!(f
+        .store
+        .undo_last()
+        .unwrap_err()
+        .starts_with("UNDO_CONFLICT"));
+}
+#[test]
+fn batch_tag_undo_only_reverts_actual_changes() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let b = f.add("b.txt", b"b");
+    let t = f.store.create_tag("项目").unwrap();
+    f.tag(&[&a.id], &[&t.id]);
+    f.tag(&[&a.id, &b.id], &[&t.id]);
+    f.store.undo_last().unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().tags.len(), 1);
+    assert!(f.store.file(&b.id).unwrap().tags.is_empty());
+    f.store.undo_last().unwrap();
+    assert!(f.store.file(&a.id).unwrap().tags.is_empty());
+}
+#[test]
+fn stale_batch_rolls_back_all_files() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let b = f.add("b.txt", b"b");
+    let t = f.store.create_tag("标注").unwrap();
+    let v = json!({"ids":[a.id,b.id],"versions":{a.id.clone():1,b.id.clone():88},"add":[t.id]});
+    assert!(f.store.mutate("files.tags", &v).is_err());
+    assert!(f.store.file(&a.id).unwrap().tags.is_empty());
+    assert!(f.store.undo.is_empty());
+}
+#[test]
+fn note_versions_are_independent_and_conflicts_preserve_saved_text() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    f.patch("files.favorite", &[&a.id], json!({"value":true}))
+        .unwrap();
+    f.store
+        .save_note(&json!({"id":a.id,"text":"已保存","version":0}))
+        .unwrap();
+    assert!(f
+        .store
+        .save_note(&json!({"id":a.id,"text":"旧版覆盖","version":0}))
+        .is_err());
+    assert_eq!(f.store.file(&a.id).unwrap().note, "已保存");
+    f.store.undo_last().unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().note, "已保存");
+}
+#[test]
+fn note_limit_uses_visible_characters() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    assert!(f
+        .store
+        .save_note(&json!({"id":a.id,"text":"字".repeat(10001),"version":0}))
+        .is_err());
+    assert!(f
+        .store
+        .save_note(&json!({"id":a.id,"text":"👨‍👩‍👧".repeat(10000),"version":0}))
+        .is_ok());
+}
+#[test]
+fn text_search_is_literal_and_terms_match_across_fields() {
+    let mut f = Fixture::new();
+    let a = f.add("100%_产品.txt", b"a");
+    f.add("100xy产品.txt", b"b");
+    let t = f.store.create_tag("设计").unwrap();
+    f.tag(&[&a.id], &[&t.id]);
+    f.store
+        .save_note(&json!({"id":a.id,"text":"客户 Café","version":0}))
+        .unwrap();
+    for term in ["100%_", "产品 设计 客户 cafe\u{301}"] {
+        let mut query = q();
+        query.text = term.into();
+        assert_eq!(f.query(query)["total"], 1);
+    }
+    let mut query = q();
+    query.text = "' OR 1=1 --".into();
+    assert_eq!(f.query(query)["total"], 0);
+}
+#[test]
+fn all_any_exclude_and_inbox_filters() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let b = f.add("b.txt", b"b");
+    f.add("c.txt", b"c");
+    let x = f.store.create_tag("X").unwrap();
+    let y = f.store.create_tag("Y").unwrap();
+    f.tag(&[&a.id, &b.id], &[&x.id]);
+    f.tag(&[&b.id], &[&y.id]);
+    let mut query = q();
+    query.include = vec![x.id.clone(), y.id.clone()];
+    assert_eq!(f.query(query.clone())["total"], 1);
+    query.mode = "any".into();
+    assert_eq!(f.query(query.clone())["total"], 2);
+    query.include = vec![x.id];
+    query.exclude = vec![y.id];
+    assert_eq!(f.query(query.clone())["total"], 1);
+    query.exclude = query.include.clone();
+    assert!(f.store.query(&query).is_err());
+    let mut query = q();
+    query.scope = "inbox".into();
+    assert_eq!(f.query(query)["total"], 1);
+}
+#[test]
+fn directory_filter_respects_boundaries() {
+    let mut f = Fixture::new();
+    f.add("a/x.txt", b"a");
+    f.add("a/sub/y.txt", b"b");
+    f.add("ab/z.txt", b"c");
+    let mut query = q();
+    query.directory = f.files.join("a").to_string_lossy().into();
+    query.recursive = true;
+    assert_eq!(f.query(query.clone())["total"], 2);
+    query.recursive = false;
+    assert_eq!(f.query(query)["total"], 1);
+}
+#[test]
+fn pagination_has_no_duplicates_and_stable_ties() {
+    let mut f = Fixture::new();
+    for i in 0..12 {
+        f.add(&format!("{i}.txt"), b"a");
+    }
+    let mut query = q();
+    query.limit = 5;
+    query.sort = "size".into();
+    let first = f.query(query.clone());
+    query.offset = 5;
+    let second = f.query(query.clone());
+    query.offset = 10;
+    let third = f.query(query);
+    let ids: std::collections::HashSet<_> = [&first, &second, &third]
+        .into_iter()
+        .flat_map(|v| {
+            v["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["id"].as_str().unwrap())
+        })
+        .collect();
+    assert_eq!(ids.len(), 12);
+    assert_eq!(third["hasMore"], false);
+}
+#[test]
+fn rename_delete_and_chained_undo_restore_tag_links() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let t = f.store.create_tag("旧名称").unwrap();
+    f.tag(&[&a.id], &[&t.id]);
+    f.store
+        .mutate(
+            "tags.rename",
+            &json!({"id":t.id,"name":"新名称","version":1}),
+        )
+        .unwrap();
+    f.store
+        .mutate("tags.delete", &json!({"id":t.id,"version":2}))
+        .unwrap();
+    assert!(f.store.file(&a.id).unwrap().tags.is_empty());
+    f.store.undo_last().unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().tags[0].name, "新名称");
+    f.store.undo_last().unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().tags[0].name, "旧名称");
+    f.store.undo_last().unwrap();
+    assert!(f.store.file(&a.id).unwrap().tags.is_empty());
+}
+#[test]
+fn undo_does_not_hide_unrelated_version_conflicts() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let b = f.add("b.txt", b"b");
+    f.patch("files.favorite", &[&a.id], json!({"value":true}))
+        .unwrap();
+    f.patch("files.favorite", &[&b.id], json!({"value":true}))
+        .unwrap();
+    f.store
+        .conn
+        .execute("UPDATE files SET version=version+1 WHERE id=?", [&a.id])
+        .unwrap();
+    f.store.undo_last().unwrap();
+    assert!(f
+        .store
+        .undo_last()
+        .unwrap_err()
+        .starts_with("UNDO_CONFLICT"));
+}
+#[test]
+fn undo_depth_is_bounded() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    for i in 0..25 {
+        f.patch("files.favorite", &[&a.id], json!({"value":i%2==0}))
+            .unwrap();
+    }
+    assert_eq!(f.store.undo.len(), 20);
+    for _ in 0..20 {
+        f.store.undo_last().unwrap();
+    }
+    assert!(f.store.undo_last().is_err());
+}
+#[test]
+fn missing_and_relink_preserve_record_id() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let renamed = f.files.join("moved.txt");
+    fs::rename(&a.path, &renamed).unwrap();
+    assert_eq!(f.store.refresh_file(&a.id).unwrap().status, "missing");
+    f.store
+        .relink(&json!({"id":a.id,"path":renamed,"version":1}))
+        .unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().name, "moved.txt");
+    f.store.undo_last().unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().path, a.path);
+    assert_eq!(fs::read(renamed).unwrap(), b"a");
+}
+#[test]
+fn replacement_at_same_path_requires_confirmation() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    fs::rename(&a.path, f.files.join("original.txt")).unwrap();
+    fs::write(&a.path, b"replacement").unwrap();
+    assert_eq!(f.store.refresh_file(&a.id).unwrap().status, "inaccessible");
+    assert!(f
+        .store
+        .add_file(&fsops::inspect(Path::new(&a.path)).unwrap())
+        .is_err());
+    assert_eq!(f.store.file(&a.id).unwrap().identity, a.identity);
+}
+#[test]
+fn relink_cannot_overwrite_another_record() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let b = f.add("b.txt", b"b");
+    assert!(f
+        .store
+        .relink(&json!({"id":a.id,"path":b.path,"version":1}))
+        .is_err());
+    assert_eq!(f.store.file(&a.id).unwrap().path, a.path);
+}
+#[test]
+fn app_data_is_excluded() {
+    let mut f = Fixture::new();
+    let m = fsops::inspect(&f.store.root.join("library.sqlite")).unwrap();
+    assert!(f.store.add_file(&m).is_err());
+}
+#[test]
+fn image_preview_resizes_caches_and_tracks_revision() {
+    let f = Fixture::new();
+    let mut f = f;
+    let path = f.files.join("image.png");
+    image::RgbImage::from_pixel(1000, 500, image::Rgb([44, 102, 84]))
+        .save(&path)
+        .unwrap();
+    f.store.add_file(&fsops::inspect(&path).unwrap()).unwrap();
+    let id = f.store.all_paths().unwrap()[0].0.clone();
+    let a = f.store.file(&id).unwrap();
+    let preview = fsops::preview(&f.store.root, &a, false).unwrap();
+    let data = STANDARD.decode(preview["data"].as_str().unwrap()).unwrap();
+    let image = image::load_from_memory(&data).unwrap();
+    assert_eq!((image.width(), image.height()), (420, 210));
+    assert!(fsops::cache_path(&f.store.root, &a, false).exists());
+    image::RgbImage::new(600, 800).save(&path).unwrap();
+    let new = f.store.refresh_file(&id).unwrap();
+    assert_ne!(a.revision, new.revision);
+    assert!(!fsops::cache_path(&f.store.root, &new, false).exists());
+}
+#[test]
+fn utf_text_preview_and_corrupt_image_degrade() {
+    let mut f = Fixture::new();
+    let a = f.add(
+        "中文.txt",
+        "<script>alert('plain')</script> 中文".as_bytes(),
+    );
+    let r = fsops::preview(&f.store.root, &a, true).unwrap();
+    assert!(r["text"].as_str().unwrap().contains("<script>"));
+    let a = f.add("utf16.txt", &[255, 254, 0x2d, 0x4e, 0x87, 0x65]);
+    assert_eq!(
+        fsops::preview(&f.store.root, &a, true).unwrap()["text"],
+        "中文"
+    );
+    let b = f.add("broken.png", b"broken");
+    assert!(fsops::preview(&f.store.root, &b, false).is_err());
+}
+#[test]
+fn backup_roundtrip_captures_wal_and_keeps_protective_backup() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"original");
+    let t = f.store.create_tag("备份").unwrap();
+    f.tag(&[&a.id], &[&t.id]);
+    f.store
+        .save_note(&json!({"id":a.id,"text":"原备注","version":0}))
+        .unwrap();
+    let backup = f.files.join("test.sqtagbackup");
+    f.store.export_backup(&backup).unwrap();
+    let inspected = backup::inspect_backup(&backup, &f.store.root).unwrap();
+    assert_eq!(inspected.info["fileCount"], 1);
+    drop(inspected);
+    f.store
+        .save_note(&json!({"id":a.id,"text":"后备注","version":1}))
+        .unwrap();
+    f.patch("files.remove", &[&a.id], json!({})).unwrap();
+    let r = f.store.restore_backup(&backup).unwrap();
+    assert_eq!(f.store.file(&a.id).unwrap().note, "原备注");
+    assert_eq!(f.store.file(&a.id).unwrap().tags[0].id, t.id);
+    assert!(Path::new(r["recoveryBackup"].as_str().unwrap()).exists());
+    assert_eq!(fs::read(&a.path).unwrap(), b"original");
+    assert!(f.store.undo.is_empty());
+    assert!(!f.store.root.join("restore-state.toml").exists());
+}
+#[test]
+fn corrupt_backup_does_not_change_library() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    let broken = f.files.join("broken.sqtagbackup");
+    fs::write(&broken, b"not a backup").unwrap();
+    assert!(f.store.restore_backup(&broken).is_err());
+    assert_eq!(f.store.file(&a.id).unwrap().name, a.name);
+    assert_eq!(f.query(q())["total"], 1);
+}
+#[test]
+fn backup_checksum_rejects_tampering() {
+    use std::io::{Read, Write};
+    let mut f = Fixture::new();
+    f.add("a.txt", b"a");
+    let path = f.files.join("ok.sqtagbackup");
+    f.store.export_backup(&path).unwrap();
+    let mut reader = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let bad = f.files.join("bad.sqtagbackup");
+    let mut writer = zip::ZipWriter::new(fs::File::create(&bad).unwrap());
+    for i in 0..reader.len() {
+        let mut file = reader.by_index(i).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        if file.name() == "metadata.sqlite" {
+            bytes[100] ^= 1;
+        }
+        writer
+            .start_file(file.name(), zip::write::SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(&bytes).unwrap();
+    }
+    writer.finish().unwrap();
+    assert!(backup::inspect_backup(&bad, &f.store.root)
+        .err()
+        .unwrap()
+        .contains("校验失败"));
+}
+#[test]
+fn restart_persists_settings_and_annotations() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", b"a");
+    f.store
+        .save_settings(&json!({"key":"theme","value":"dark"}))
+        .unwrap();
+    f.store
+        .save_note(&json!({"id":a.id,"text":"persisted","version":0}))
+        .unwrap();
+    let root = f.store.root.clone();
+    drop(f.store);
+    let reopened = Store::open(&root).unwrap();
+    assert_eq!(reopened.file(&a.id).unwrap().note, "persisted");
+    assert_eq!(reopened.bootstrap().unwrap()["settings"]["theme"], "dark");
+}
+#[test]
+fn future_schema_is_rejected() {
+    let f = Fixture::new();
+    let root = f.store.root.clone();
+    f.store
+        .conn
+        .pragma_update(None, "user_version", 999)
+        .unwrap();
+    drop(f.store);
+    assert!(Store::open(&root)
+        .err()
+        .unwrap()
+        .starts_with("VERSION_UNSUPPORTED"));
+}
+#[test]
+fn interrupted_restore_marker_is_validated_on_startup() {
+    let f = Fixture::new();
+    let root = f.store.root.clone();
+    fs::write(
+        root.join("restore-state.toml"),
+        "recovery_backup='retained'",
+    )
+    .unwrap();
+    drop(f.store);
+    let reopened = Store::open(&root).unwrap();
+    assert!(!reopened.recovery_notice.is_empty());
+    assert!(!root.join("restore-state.toml").exists());
+}
+#[test]
+fn representative_ten_thousand_file_search_benchmark() {
+    let mut f = Fixture::new();
+    let start = Instant::now();
+    let tags: Vec<_> = (0..40)
+        .map(|i| f.store.create_tag(&format!("项目{i}")).unwrap())
+        .collect();
+    let tx = f.store.conn.transaction().unwrap();
+    for i in 0..10000 {
+        let fid = format!("bench-{i}");
+        let name = format!("资料{i} 产品设计.txt");
+        let note = format!(
+            "项目调研 客户反馈 第{i}条资料，需要持续整理和对照使用。{}",
+            "用户体验与设计流程。".repeat(i % 10 + 1)
+        );
+        tx.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,note,note_key) VALUES(?,?,?,?,?,?, 'txt','text',1024,100,100,'rev',?,?)",rusqlite::params![fid,format!("C:\\fixtures\\{name}"),format!("C:\\fixtures\\{name}"),"C:\\fixtures",name,key(&name),note,key(&note)]).unwrap();
+        for j in 0..3 {
+            tx.execute(
+                "INSERT INTO file_tags VALUES(?,?)",
+                rusqlite::params![fid, tags[(i + j * 7) % tags.len()].id],
+            )
+            .unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    let mut times = vec![];
+    for i in 0..120 {
+        let mut query = q();
+        query.text = if i % 3 == 0 {
+            "产品 客户反馈".into()
+        } else {
+            format!("资料{}", i % 100)
+        };
+        query.include = vec![tags[i % 40].id.clone()];
+        if i % 2 == 0 {
+            query.mode = "any".into();
+            query.include.push(tags[(i + 7) % 40].id.clone());
+        }
+        let timer = Instant::now();
+        let result = f.query(query);
+        assert!(result["total"].is_number());
+        times.push(timer.elapsed().as_secs_f64() * 1000.0);
+    }
+    times.sort_by(f64::total_cmp);
+    println!("BENCH: 10,000 files, 40 tags, 30,000 links, varied Chinese notes; 120 queries; p50={:.2}ms p95={:.2}ms max={:.2}ms seed+query={:.2}s",times[60],times[114],times[119],start.elapsed().as_secs_f64());
+    assert!(times[114] < 300.0, "search p95 exceeded 300ms");
+}

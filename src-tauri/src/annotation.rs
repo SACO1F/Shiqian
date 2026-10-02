@@ -1,0 +1,176 @@
+use crate::{
+    db::{sv, Guard, Step, Store, Undo},
+    fsops,
+    model::*,
+};
+use rusqlite::{params, OptionalExtension};
+use serde_json::{json, Value};
+use std::{collections::HashSet, path::Path};
+
+impl Store {
+    pub fn floating_presets(&mut self) -> Result<Value> {
+        let saved: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='floatingTags'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql_err)?;
+        let ids = if let Some(saved) = saved {
+            serde_json::from_str::<Vec<String>>(&saved).unwrap_or_default()
+        } else {
+            let mut ids = vec![];
+            for name in ["灵感", "参考素材", "待处理", "已完成"] {
+                ids.push(self.create_tag(name)?.id);
+            }
+            self.save_floating_presets(&ids)?;
+            ids
+        };
+        let tags = self.tags()?;
+        let ids: Vec<_> = ids
+            .into_iter()
+            .filter(|id| tags.iter().any(|t| &t.id == id))
+            .collect();
+        Ok(json!({"ids":ids,"tags":tags}))
+    }
+    pub fn save_floating_presets(&mut self, ids: &[String]) -> Result<Value> {
+        if ids.len() > 24 {
+            return Err(err("INVALID_INPUT", "浮窗最多固定 24 个标签"));
+        }
+        let tags = self.tags()?;
+        let mut unique = HashSet::new();
+        if ids
+            .iter()
+            .any(|id| !unique.insert(id) || !tags.iter().any(|t| &t.id == id))
+        {
+            return Err(err("TAG_NOT_FOUND", "标签已变化，请刷新后重试"));
+        }
+        self.conn.execute("INSERT INTO settings(key,value) VALUES('floatingTags',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!(ids).to_string()]).map_err(sql_err)?;
+        Ok(json_ok())
+    }
+    /// Import and annotate as a single database operation. Failed batches leave no
+    /// partial imports. Undo removes only newly added associations, retaining files.
+    pub fn annotate(&mut self, v: &Value) -> Result<Value> {
+        let tid = str_arg(v, "tagId")?;
+        let tag = self
+            .tags()?
+            .into_iter()
+            .find(|t| t.id == tid)
+            .ok_or_else(|| err("TAG_NOT_FOUND", "标签已删除，请重新选择"))?;
+        let paths = string_list(v, "paths");
+        let ids = string_list(v, "ids");
+        if paths.len() + ids.len() == 0 || paths.len() + ids.len() > 1000 {
+            return Err(err("INVALID_INPUT", "每次请选择 1～1000 个文件"));
+        }
+        let mut metas = vec![];
+        for path in &paths {
+            let m = fsops::inspect(Path::new(path))?;
+            if Path::new(&m.path).starts_with(&self.root) {
+                return Err(err("APP_DATA_EXCLUDED", "不能标注应用资料库文件"));
+            }
+            metas.push(m);
+        }
+        self.conn
+            .execute_batch("SAVEPOINT floating_annotation")
+            .map_err(sql_err)?;
+        let mut undo = Undo {
+            label: format!("浮窗标注「{}」", tag.name),
+            steps: vec![],
+            guards: vec![],
+        };
+        let result = (|| -> Result<Value> {
+            let mut unique: HashSet<String> = ids.into_iter().collect();
+            let mut imported = 0;
+            for m in metas {
+                if self.add_file(&m)? {
+                    imported += 1;
+                }
+                let fid: String = self
+                    .conn
+                    .query_row("SELECT id FROM files WHERE path_key=?", [&m.path], |r| {
+                        r.get(0)
+                    })
+                    .map_err(sql_err)?;
+                unique.insert(fid);
+            }
+            let mut applied = 0;
+            let mut names = vec![];
+            for fid in &unique {
+                let f = self.file(fid)?;
+                let active: bool = self
+                    .conn
+                    .query_row(
+                        "SELECT removed_at IS NULL FROM files WHERE id=?",
+                        [fid],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql_err)?;
+                if !active {
+                    return Err(err("FILE_REMOVED", "文件记录已移除，请刷新"));
+                }
+                names.push(f.name);
+                if self
+                    .conn
+                    .execute(
+                        "INSERT OR IGNORE INTO file_tags(file_id,tag_id) VALUES(?,?)",
+                        params![fid, tid],
+                    )
+                    .map_err(sql_err)?
+                    > 0
+                {
+                    applied += 1;
+                    self.conn
+                        .execute("UPDATE files SET version=version+1 WHERE id=?", [fid])
+                        .map_err(sql_err)?;
+                    undo.steps.push(Step {
+                        sql: "DELETE FROM file_tags WHERE file_id=? AND tag_id=?".into(),
+                        args: vec![sv(fid), sv(tid)],
+                    });
+                    undo.steps.push(Step {
+                        sql: "UPDATE files SET version=version+1 WHERE id=?".into(),
+                        args: vec![sv(fid)],
+                    });
+                    undo.guards.push(Guard {
+                        table: "files".into(),
+                        id: fid.clone(),
+                        version: f.version + 1,
+                    });
+                }
+            }
+            self.conn
+                .execute(
+                    "UPDATE tags SET last_used=? WHERE id=?",
+                    params![now(), tid],
+                )
+                .map_err(sql_err)?;
+            Ok(
+                json!({"tagName":tag.name,"applied":applied,"existing":unique.len()-applied,"imported":imported,"names":names}),
+            )
+        })();
+        match result {
+            Ok(value) => {
+                if let Err(e) = self.conn.execute_batch("RELEASE floating_annotation") {
+                    let _ = self.conn.execute_batch(
+                        "ROLLBACK TO floating_annotation; RELEASE floating_annotation",
+                    );
+                    return Err(sql_err(e));
+                }
+                if !undo.steps.is_empty() {
+                    self.undo.push(undo);
+                    if self.undo.len() > 20 {
+                        self.undo.remove(0);
+                    }
+                }
+                Ok(value)
+            }
+            Err(e) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO floating_annotation; RELEASE floating_annotation");
+                Err(e)
+            }
+        }
+    }
+}

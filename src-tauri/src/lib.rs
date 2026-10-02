@@ -1,0 +1,390 @@
+mod annotation;
+mod backup;
+mod db;
+mod floating;
+mod fsops;
+mod model;
+mod shell_target;
+#[cfg(test)]
+mod tests;
+
+use crate::{db::Store, model::*};
+use serde_json::{json, Value};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+};
+use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
+
+#[derive(Clone)]
+pub struct AppState {
+    store: Arc<Mutex<Store>>,
+    jobs: Arc<Mutex<HashMap<String, (ImportJob, Arc<AtomicBool>)>>>,
+    drag_active: Arc<AtomicBool>,
+    drag_cancel: Arc<AtomicBool>,
+}
+impl AppState {
+    fn new(root: &Path) -> Result<Self> {
+        Ok(Self {
+            store: Arc::new(Mutex::new(Store::open(root)?)),
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+            drag_active: Arc::new(AtomicBool::new(false)),
+            drag_cancel: Arc::new(AtomicBool::new(false)),
+        })
+    }
+    fn store(&self) -> Result<std::sync::MutexGuard<'_, Store>> {
+        self.store
+            .lock()
+            .map_err(|_| err("INTERNAL_ERROR", "资料库锁异常，请重启"))
+    }
+    fn start_import(&self, app: tauri::AppHandle, v: &Value) -> Result<Value> {
+        let paths = string_list(v, "paths");
+        if paths.is_empty() {
+            return Err(err("INVALID_INPUT", "请选择文件或文件夹"));
+        }
+        let recursive = v["recursive"].as_bool().unwrap_or(true);
+        let jid = id();
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut jobs = self
+                .jobs
+                .lock()
+                .map_err(|_| err("INTERNAL_ERROR", "任务锁异常"))?;
+            if jobs.values().any(|(j, _)| !j.done) {
+                return Err(err("IMPORT_BUSY", "已有加入任务正在进行"));
+            }
+            jobs.clear();
+            jobs.insert(
+                jid.clone(),
+                (
+                    ImportJob {
+                        id: jid.clone(),
+                        ..Default::default()
+                    },
+                    cancel.clone(),
+                ),
+            );
+        }
+        let state = self.clone();
+        let thread_id = jid.clone();
+        std::thread::spawn(move || {
+            let mut progress = ImportJob {
+                id: thread_id.clone(),
+                ..Default::default()
+            };
+            let root = state.store().map(|s| s.root.clone()).unwrap_or_default();
+            let mut stack: Vec<(PathBuf, usize)> =
+                paths.into_iter().map(|p| (PathBuf::from(p), 0)).collect();
+            let mut visited = std::collections::HashSet::new();
+            while let Some((path, depth)) = stack.pop() {
+                if cancel.load(Ordering::Relaxed) {
+                    progress.cancelled = true;
+                    break;
+                }
+                let outcome = (|| -> Result<()> {
+                    let meta =
+                        std::fs::symlink_metadata(&path).map_err(|e| err("ACCESS_DENIED", e))?;
+                    if fsops::is_link(&meta) || fsops::is_hidden(&meta) {
+                        progress.skipped += 1;
+                        return Ok(());
+                    }
+                    let canonical = fsops::canonical_display(&path)?;
+                    if Path::new(&canonical).starts_with(&root) {
+                        progress.skipped += 1;
+                        return Ok(());
+                    }
+                    if !visited.insert(canonical.clone()) {
+                        progress.skipped += 1;
+                        return Ok(());
+                    }
+                    if meta.is_dir() {
+                        if depth > 0 && !recursive {
+                            progress.skipped += 1;
+                            return Ok(());
+                        }
+                        for entry in
+                            std::fs::read_dir(&canonical).map_err(|e| err("ACCESS_DENIED", e))?
+                        {
+                            match entry {
+                                Ok(e) => stack.push((e.path(), depth + 1)),
+                                Err(e) => {
+                                    progress.failed += 1;
+                                    if progress.errors.len() < 100 {
+                                        progress.errors.push(format!("{}：{e}", path.display()));
+                                    }
+                                }
+                            }
+                        }
+                    } else if meta.is_file() {
+                        progress.discovered += 1;
+                        let m = fsops::inspect(Path::new(&canonical))?;
+                        let added = state.store()?.add_file(&m)?;
+                        if added {
+                            progress.added += 1;
+                        } else {
+                            progress.existing += 1;
+                        }
+                        progress.processed += 1;
+                    } else {
+                        progress.skipped += 1;
+                    }
+                    Ok(())
+                })();
+                if let Err(e) = outcome {
+                    progress.failed += 1;
+                    progress.processed += 1;
+                    if progress.errors.len() < 100 {
+                        progress.errors.push(format!("{}：{e}", path.display()));
+                    }
+                }
+                if let Ok(mut jobs) = state.jobs.lock() {
+                    if let Some((j, _)) = jobs.get_mut(&thread_id) {
+                        *j = progress.clone();
+                    }
+                }
+                if progress.processed % 50 == 0 {
+                    let _ = app.emit("import-progress", &progress);
+                }
+            }
+            progress.done = true;
+            if let Ok(mut jobs) = state.jobs.lock() {
+                if let Some((j, _)) = jobs.get_mut(&thread_id) {
+                    *j = progress.clone();
+                }
+            }
+            let _ = app.emit("import-progress", &progress);
+            let _ = app.emit("library-changed", ());
+        });
+        Ok(json!({"id":jid}))
+    }
+    fn refresh_all(&self, app: tauri::AppHandle) -> Result<Value> {
+        let paths = self.store()?.all_paths()?;
+        let state = self.clone();
+        std::thread::spawn(move || {
+            for (i, (fid, _)) in paths.iter().enumerate() {
+                if let Ok(mut s) = state.store() {
+                    let _ = s.refresh_file(fid);
+                }
+                if i % 100 == 0 {
+                    let _ = app.emit("library-changed", ());
+                }
+            }
+            let _ = app.emit("library-changed", ());
+        });
+        Ok(json_ok())
+    }
+}
+
+fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -> Result<Value> {
+    match action {
+        "floating.open" => floating::open(app, state),
+        "floating.close" => floating::close(app, state),
+        "floating.presets" => state.store()?.floating_presets(),
+        "floating.save" => state.store()?.save_floating_presets(&string_list(v, "ids")),
+        "floating.resize" => {
+            if let Some(w) = app.get_webview_window("floating") {
+                w.set_size(tauri::LogicalSize::new(
+                    340.,
+                    if v["collapsed"].as_bool().unwrap_or(false) {
+                        64.
+                    } else {
+                        460.
+                    },
+                ))
+                .map_err(|e| err("WINDOW_ERROR", e))?;
+            }
+            Ok(json_ok())
+        }
+        "floating.drag" => floating::start_drag(app, state, str_arg(v, "tagId")?),
+        "floating.cancel" => {
+            state.drag_cancel.store(true, Ordering::Relaxed);
+            Ok(json_ok())
+        }
+        "annotation.apply" => {
+            let result = state.store()?.annotate(v);
+            floating::finish(app, result.clone());
+            result
+        }
+        "annotation.reject" => {
+            floating::finish(app, Err(err("DROP_TARGET", "请把标签放到具体文件卡片上")));
+            Ok(json_ok())
+        }
+        "main.show" => floating::main_show(app),
+        "main.close" => {
+            if app
+                .get_webview_window("floating")
+                .is_some_and(|w| w.is_visible().unwrap_or(false))
+            {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            } else {
+                app.exit(0);
+            }
+            Ok(json_ok())
+        }
+        "import" => state.start_import(app.clone(), v),
+        "import.status" => {
+            let jobs = state
+                .jobs
+                .lock()
+                .map_err(|_| err("INTERNAL_ERROR", "任务锁异常"))?;
+            Ok(json!(jobs.values().next().map(|(j, _)| j.clone())))
+        }
+        "import.cancel" => {
+            if let Ok(jobs) = state.jobs.lock() {
+                for (_, cancel) in jobs.values() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            Ok(json_ok())
+        }
+        "refresh" => state.refresh_all(app.clone()),
+        "preview" => {
+            let (f, root) = {
+                let mut s = state.store()?;
+                let f = s.refresh_file(str_arg(v, "id")?)?;
+                (f, s.root.clone())
+            };
+            fsops::preview(&root, &f, v["large"].as_bool().unwrap_or(false))
+        }
+        "preview.cache" => {
+            let s = state.store()?;
+            let f = s.file(str_arg(v, "id")?)?;
+            if v["revision"].as_str() != Some(&f.revision) {
+                return Err(err("FILE_CHANGED", "文件版本已变化"));
+            }
+            fsops::store_pdf_preview(
+                &s.root,
+                &f,
+                v["large"].as_bool().unwrap_or(false),
+                str_arg(v, "data")?,
+            )
+        }
+        "files.open" | "files.reveal" => {
+            let f = state.store()?.refresh_file(str_arg(v, "id")?)?;
+            if action == "files.reveal" {
+                fsops::reveal(&f.path)?;
+            } else {
+                if f.status != "available" {
+                    return Err(err("FILE_UNAVAILABLE", f.error));
+                }
+                open::that(&f.path).map_err(|e| err("OPEN_FAILED", e))?;
+            }
+            Ok(json_ok())
+        }
+        "data.reveal" => {
+            open::that(state.store()?.root.clone()).map_err(|e| err("OPEN_FAILED", e))?;
+            Ok(json_ok())
+        }
+        "backup.inspect" => {
+            let root = state.store()?.root.clone();
+            Ok(backup::inspect_backup(Path::new(str_arg(v, "path")?), &root)?.info)
+        }
+        "bootstrap" => state.store()?.bootstrap(),
+        "query" => {
+            let q: Query =
+                serde_json::from_value(v.clone()).map_err(|e| err("INVALID_INPUT", e))?;
+            state.store()?.query(&q)
+        }
+        "file" => Ok(json!(state.store()?.file(str_arg(v, "id")?)?)),
+        "tag.create" => Ok(json!(state.store()?.create_tag(str_arg(v, "name")?)?)),
+        "note.save" => state.store()?.save_note(v),
+        "settings.save" => state.store()?.save_settings(v),
+        "files.tags" | "files.favorite" | "files.remove" | "tags.rename" | "tags.delete" => {
+            state.store()?.mutate(action, v)
+        }
+        "files.relink" => state.store()?.relink(v),
+        "undo" => state.store()?.undo_last(),
+        "cache.clear" => state.store()?.clear_cache(),
+        "backup.export" => state.store()?.export_backup(Path::new(str_arg(v, "path")?)),
+        "backup.restore" => {
+            if state
+                .jobs
+                .lock()
+                .map_err(|_| err("INTERNAL_ERROR", "任务锁异常"))?
+                .values()
+                .any(|(j, _)| !j.done)
+            {
+                return Err(err("IMPORT_BUSY", "请等待加入任务完成或取消后再恢复"));
+            }
+            state
+                .store()?
+                .restore_backup(Path::new(str_arg(v, "path")?))
+        }
+        _ => Err(err("UNKNOWN_ACTION", action)),
+    }
+}
+#[tauri::command]
+async fn api(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    action: String,
+    payload: Option<Value>,
+) -> Result<Value> {
+    let state = state.inner().clone();
+    let payload = payload.unwrap_or(json!({}));
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = dispatch(&state, &app, &action, &payload);
+        if result.is_ok()
+            && matches!(
+                action.as_str(),
+                "tag.create"
+                    | "tags.rename"
+                    | "tags.delete"
+                    | "files.tags"
+                    | "files.remove"
+                    | "files.favorite"
+                    | "undo"
+                    | "settings.save"
+                    | "floating.save"
+                    | "backup.restore"
+            )
+        {
+            let _ = app.emit("library-changed", ());
+        }
+        result
+    })
+    .await
+    .map_err(|e| err("INTERNAL_ERROR", e))?
+}
+pub fn run() {
+    let mut context = tauri::generate_context!();
+    // An explicit library directory also isolates WebView state for testing or
+    // managed deployments. Normal installations use the OS app-data directory.
+    if let Some(root) = std::env::var_os("SHIQIAN_DATA_DIR") {
+        // An isolated library must not activate a user's already-running normal
+        // instance. Keep the single-instance lock scoped to its data directory.
+        use sha2::{Digest, Sha256};
+        let absolute = std::path::absolute(root).expect("Invalid SHIQIAN_DATA_DIR");
+        let digest = format!(
+            "{:x}",
+            Sha256::digest(absolute.to_string_lossy().to_lowercase().as_bytes())
+        );
+        context.config_mut().identifier = format!("local.shiqian.isolated.{}", &digest[..16]);
+        for window in &mut context.config_mut().app.windows {
+            window.create = false;
+        }
+    }
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app,_,_|{if let Some(w)=app.get_webview_window("main"){let _=w.unminimize();let _=w.show();let _=w.set_focus();}}))
+        .plugin(tauri_plugin_dialog::init())
+        .setup(|app|{
+            let root=std::env::var_os("SHIQIAN_DATA_DIR").map(PathBuf::from).unwrap_or(app.path().app_data_dir()?);
+            let state=match AppState::new(&root){Ok(state)=>state,Err(error)=>{
+                app.dialog().message(format!("资料库无法打开，已停止写入。\n\n{error}\n\n数据目录：{}\n请保留该目录与备份；如果提示版本过新，请使用创建该库的较新版本。",root.display())).title("拾签 · 资料库不可用").kind(tauri_plugin_dialog::MessageDialogKind::Error).blocking_show();
+                app.handle().exit(1);return Ok(());
+            }};app.manage(state.clone());
+            if std::env::var_os("SHIQIAN_DATA_DIR").is_some(){
+                for config in &app.config().app.windows {tauri::WebviewWindowBuilder::from_config(app,config)?.data_directory(root.join("webview")).build()?;}
+            }
+            let _=state.refresh_all(app.handle().clone());Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![api])
+        .run(context).expect("拾签启动失败");
+}

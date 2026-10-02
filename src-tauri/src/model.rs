@@ -1,0 +1,112 @@
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
+use unicode_casefold::UnicodeCaseFold;
+use unicode_normalization::UnicodeNormalization;
+
+pub type Result<T> = std::result::Result<T, String>;
+pub fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+pub fn key(s: &str) -> String {
+    s.nfc().collect::<String>().case_fold().collect()
+}
+pub fn id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+pub fn err(code: &str, message: impl std::fmt::Display) -> String {
+    format!("{code}: {message}")
+}
+pub fn sql_err(e: rusqlite::Error) -> String {
+    err("DATABASE_ERROR", e)
+}
+pub fn str_arg<'a>(v: &'a Value, name: &str) -> Result<&'a str> {
+    v.get(name)
+        .and_then(Value::as_str)
+        .ok_or_else(|| err("INVALID_INPUT", format!("缺少参数 {name}")))
+}
+pub fn string_list(v: &Value, name: &str) -> Vec<String> {
+    v.get(name)
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tag {
+    pub id: String,
+    pub name: String,
+    pub count: i64,
+    pub version: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRecord {
+    pub id: String,
+    pub path: String,
+    pub parent: String,
+    pub name: String,
+    pub extension: String,
+    pub kind: String,
+    pub bytes: i64,
+    pub modified: i64,
+    pub added: i64,
+    pub status: String,
+    pub error: String,
+    pub favorite: bool,
+    pub version: i64,
+    pub note: String,
+    pub note_version: i64,
+    pub revision: String,
+    pub identity: String,
+    pub tags: Vec<Tag>,
+}
+
+#[derive(Clone, Default, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Query {
+    pub scope: String,
+    pub text: String,
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    pub mode: String,
+    pub kinds: Vec<String>,
+    pub status: String,
+    pub directory: String,
+    pub recursive: bool,
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub sort: String,
+    pub direction: String,
+    pub offset: usize,
+    pub limit: usize,
+}
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportJob {
+    pub id: String,
+    pub discovered: usize,
+    pub processed: usize,
+    pub added: usize,
+    pub existing: usize,
+    pub skipped: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+    pub done: bool,
+    pub cancelled: bool,
+}
+
+pub fn json_ok() -> Value {
+    json!({"ok": true})
+}

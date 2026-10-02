@@ -1,0 +1,29 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+qa/
+public/pdf-assets/
+*.tsbuildinfo
+
+# Local delivery archives and user-owned material
+/releases/
+/packages/
+/local-only/
+
+# Local credentials and library data
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.sqtagbackup
+*.pem
+*.key
+
+# Keep the historical, synthetic-data verification evidence
+!docs/evidence/*.log

@@ -1,0 +1,118 @@
+<div align="center">
+  <img src="public/icon.svg" alt="拾签图标" width="76" />
+  <h1>拾签 · Shiqian</h1>
+  <p><strong>顺手贴上标签，随时找回灵感。</strong></p>
+  <p>一个围绕本地文件、多标签与轻量浮窗设计的 Windows 资料整理工具。</p>
+  <p>
+    <img alt="版本 0.2.0" src="https://img.shields.io/badge/version-0.2.0-527565" />
+    <img alt="Windows 11 x64" src="https://img.shields.io/badge/platform-Windows%2011%20x64-607D8B" />
+    <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8" />
+    <img alt="本地资料库" src="https://img.shields.io/badge/data-local%20first-8B7AA8" />
+  </p>
+  <p>
+    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.2.0">下载体验版</a> ·
+    <a href="docs/desktop-guide.md">使用与开发指南</a> ·
+    <a href="docs/roadmap.md">开发路线</a> ·
+    <a href="docs/agent-integration.md">Agent 结合分析</a>
+  </p>
+</div>
+
+---
+
+## 把标签，贴到文件上
+
+文件可以留在原来的文件夹。给它添加「灵感」「参考素材」「待处理」，再用标签、备注和组合筛选找回。一个文件可以拥有多个标签，无需为了分类反复复制文件。
+
+标签浮窗保持置顶，让整理动作留在手边：将标签拖向具体文件，或把一批文件拖到标签上。
+
+<table>
+  <tr><th>浅色模式</th><th>深色模式</th></tr>
+  <tr>
+    <td><img src="docs/images/floating-light.png" width="340" alt="浅色标签浮窗，展示内置标签与预设管理" /></td>
+    <td><img src="docs/images/floating-dark.png" width="340" alt="深色标签浮窗，展示标签与标注反馈" /></td>
+  </tr>
+</table>
+
+> 当前版本为 **v0.2.0 体验版**。向外拖标签面向 Windows 桌面、资源管理器及拾签文件卡片；完整跨窗口物理拖拽、多屏和混合 DPI 的验收仍待补齐。[查看测试范围](docs/validation-v0.2.md)
+
+## 目前能做什么
+
+| 能力 | 说明 |
+| --- | --- |
+| 多标签整理 | 创建、重命名、批量添加或移除标签；支持备注与收藏 |
+| 标签浮窗 | 4 个内置标签、自定义预设、最多固定 24 个标签；收起展开与主题切换 |
+| 双向标注 | 拖标签到文件；拖多个文件到标签；也可用文件选择器完成标注 |
+| 组合查找 | 搜索名称、标签和备注；组合标签、类型、目录、日期和可用性条件 |
+| 本地预览 | JPEG、PNG、WebP、PDF 首页与纯文本；其他格式交给默认程序 |
+| 数据保护 | 原子批次、版本冲突检查、会话内撤销、标注备份与恢复前保护备份 |
+
+浏览器扩展、OCR、图片区域标记、语义检索和 Agent 接口目前处于规划阶段。
+
+## 开始使用
+
+从 [Releases](https://github.com/SACO1F/Shiqian/releases/tag/v0.2.0) 下载 Windows x64 安装包。安装器按当前用户安装，并检查 WebView2 Runtime。运行环境就绪后，核心文件整理功能无需联网，也无需账号。
+
+1. 加入文件或文件夹，在工作台查看资料。
+2. 从左下角打开「标签浮窗」，使用内置标签，或预设自己的标签。
+3. 给文件添加标签和备注，再通过侧栏标签或搜索框找回。
+4. 在「偏好设置」导出标注备份。
+
+**标注是标签和文字备注，原文件内容不会被修改。** `.sqtagbackup` 包含标注、文件位置和设置，不包含原文件。单文件 EXE 仍使用系统 WebView2 与用户应用数据目录，不是把资料库存放在程序旁边的便携模式。
+
+完整操作、快捷键、文件重新关联和恢复说明见 [桌面指南](docs/desktop-guide.md) 与 [浮窗指南](docs/floating-tags-v0.2.md)。
+
+## 本地开发
+
+环境：Windows x64、Node.js、Rust MSVC、Visual Studio C++ Build Tools、WebView2。已有构建记录使用 Node.js 25.8.1、Rust 1.97.1；依赖由两份锁文件固定。
+
+```powershell
+git clone https://github.com/SACO1F/Shiqian.git
+cd Shiqian
+npm ci
+npm run desktop
+```
+
+私有仓库需要有访问权限的 GitHub 账号。已取得本地项目副本时，直接进入项目根目录执行最后两条命令即可。
+
+```powershell
+npm run build       # TypeScript 检查与前端生产构建
+npm run test:core   # Rust 后端测试
+npm run package     # 构建 Windows 安装包
+```
+
+安装包输出到 `src-tauri/target/release/bundle/nsis/`。PDF 资源在构建前从依赖复制，随应用发布。仅运行 `npm run dev` 不具备桌面后端能力。
+
+## 项目结构
+
+```text
+Shiqian/
+├─ src/                 React 工作台、标签浮窗与预览
+├─ src-tauri/           Rust 文件操作、SQLite、备份与窗口管理
+├─ scripts/             资源准备、测试与验证脚本
+├─ public/              应用静态资源
+├─ docs/                开发规格、指南、路线与测试证据
+├─ releases/            本地历史交付文件（不进入 Git，线上见 Releases）
+└─ local-only/          本地保留素材（不上传 GitHub）
+```
+
+技术栈：**Tauri 2 · React · TypeScript · Rust · SQLite**。
+
+## 开发进展
+
+| 阶段 | 状态 |
+| --- | --- |
+| 桌面文件整理与标签浮窗 v0.2.0 | 已实现，已有构建和主要流程验证 |
+| 浮窗体验、跨窗口拖拽及显示环境兼容 | 下一轮优先事项 |
+| 标签治理、智能集合与目录监听 | 规划中 |
+| 浏览器协同 | 已有设计文档，尚无扩展实现 |
+| Agent 只读检索与整理建议 | 已完成接入分析，尚无接口实现 |
+
+已保存的 v0.2.0 记录包含 **34 项后端测试通过**及 **42 项桌面、浮窗与目标路由检查通过**。这些是原发布环境的验证记录，不代表每次拉取都会重新运行；干净系统安装、升级、多屏和长期运行的完整验收仍待完成。
+
+## 文档导航
+
+- [桌面开发规格](docs/desktop-development-spec-v0.1.md) · [浏览器扩展设计](docs/browser-extension-design-v0.2.md)
+- [完整桌面指南](docs/desktop-guide.md) · [标签浮窗指南](docs/floating-tags-v0.2.md)
+- [后续开发路线](docs/roadmap.md) · [Agent 接入分析与建议](docs/agent-integration.md)
+- [v0.2 验证记录](docs/validation-v0.2.md) · [历史首版记录](docs/validation.md)
+- [项目打包与仓库说明](docs/project-handoff.md) · [第三方组件声明](THIRD_PARTY_NOTICES.md)
