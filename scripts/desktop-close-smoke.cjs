@@ -19,6 +19,10 @@ const { DatabaseSync } = require("node:sqlite");
   assert.ok(
     path.resolve(boot.dataPath).startsWith(path.join(root, "qa") + path.sep),
   );
+  await page.getByLabel("搜索文件", { exact: true }).fill("品牌视觉参考");
+  const details = page.getByLabel("切换详情面板", { exact: true });
+  if ((await details.getAttribute("aria-pressed")) === "false")
+    await details.click();
   await page
     .getByRole("option", { name: "品牌视觉参考.png", exact: true })
     .click();

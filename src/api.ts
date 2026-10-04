@@ -56,6 +56,8 @@ export interface Bootstrap {
     views?: Record<string, string>;
     density?: string;
     details?: boolean;
+    galleryColumns?: number;
+    sidebarCollapsed?: boolean;
   };
   undoLabel?: string;
   dataPath: string;

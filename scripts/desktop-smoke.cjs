@@ -221,7 +221,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.getByLabel("列表视图").click();
   await page.locator(".file-list").first().waitFor();
   pass("List view renders real files");
-  await page.getByLabel("网格视图").click();
+  await page.getByLabel("瀑布流视图").click();
   await page.locator(".file-card:not(.file-list)").first().waitFor();
   await page.getByRole("button", { name: /偏好设置/ }).click();
   await page.getByRole("button", { name: "深色", exact: true }).click();

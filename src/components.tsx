@@ -40,6 +40,7 @@ import {
 } from "./api";
 import { Preview } from "./preview";
 import { Draft } from "./notes";
+import { MasonryGallery } from "./MasonryGallery";
 
 export function Modal({
   title,
@@ -119,6 +120,8 @@ export function FilesView({
   total,
   view,
   density,
+  galleryColumns,
+  onColumnCapacity,
   selected,
   onSelect,
   onOpen,
@@ -133,6 +136,8 @@ export function FilesView({
   total: number;
   view: string;
   density: string;
+  galleryColumns: number;
+  onColumnCapacity: (capacity: number) => void;
   selected: string[];
   onSelect: (f: LocalFile, e: React.MouseEvent) => void;
   onOpen: (f: LocalFile) => void;
@@ -151,18 +156,18 @@ export function FilesView({
     obs.observe(scroll.current);
     return () => obs.disconnect();
   }, []);
-  const columns =
-    view === "list" ? 1 : Math.max(1, Math.floor((width - 40) / 210));
-  const rowHeight = view === "list" ? 68 : density === "compact" ? 208 : 246;
+  const capacity = Math.max(2, Math.min(8, Math.floor((width + 14) / 134)));
+  useEffect(() => onColumnCapacity(capacity), [capacity, onColumnCapacity]);
+  const rowHeight = density === "compact" ? 58 : 68;
   const virtual = useVirtualizer({
-    count: Math.ceil(files.length / columns),
+    count: files.length,
     getScrollElement: () => scroll.current,
     estimateSize: () => rowHeight,
     overscan: 2,
   });
   useEffect(() => {
     virtual.measure();
-  }, [rowHeight, columns]);
+  }, [rowHeight]);
   return (
     <div
       className="file-area"
@@ -228,103 +233,74 @@ export function FilesView({
               <span>大小</span>
             </div>
           )}
-          <div
-            className="virtual-space"
-            style={{ height: virtual.getTotalSize() }}
-          >
-            {virtual.getVirtualItems().map((row) => (
-              <div
-                className={`virtual-row ${view === "list" ? "list-row" : "grid-row"}`}
-                key={row.key}
-                style={{
-                  transform: `translateY(${row.start}px)`,
-                  height: rowHeight,
-                  gridTemplateColumns: `repeat(${columns},minmax(0,1fr))`,
-                }}
-              >
-                {files
-                  .slice(row.index * columns, (row.index + 1) * columns)
-                  .map((f) => (
+          {view === "grid" ? (
+            <MasonryGallery
+              files={files}
+              scroll={scroll}
+              width={width}
+              columns={Math.min(galleryColumns, capacity)}
+              gap={density === "compact" ? 10 : 18}
+              selected={selected}
+              onSelect={onSelect}
+              onOpen={onOpen}
+            />
+          ) : (
+            <div
+              className="virtual-space"
+              style={{ height: virtual.getTotalSize() }}
+            >
+              {virtual.getVirtualItems().map((row) => {
+                const f = files[row.index];
+                return (
+                  <div
+                    className="virtual-row list-row"
+                    key={f.id}
+                    style={{
+                      transform: `translateY(${row.start}px)`,
+                      height: rowHeight,
+                    }}
+                  >
                     <button
-                      key={f.id}
                       data-file-id={f.id}
-                      className={`file-card ${view === "list" ? "file-list" : ""} ${selected.includes(f.id) ? "is-selected" : ""} ${f.status !== "available" ? "is-unavailable" : ""}`}
+                      className={`file-card file-list ${selected.includes(f.id) ? "is-selected" : ""} ${f.status !== "available" ? "is-unavailable" : ""}`}
                       role="option"
                       aria-selected={selected.includes(f.id)}
                       aria-label={f.name}
-                      onClick={(e) => onSelect(f, e)}
+                      onClick={(event) => onSelect(f, event)}
                       onDoubleClick={() => onOpen(f)}
                     >
                       <span className="file-art">
-                        <Preview file={f} compact={view === "list"} />
-                        {view === "grid" && (
-                          <>
-                            <span className="file-kind">
-                              {f.extension.toUpperCase() || "FILE"}
-                            </span>
-                            {selected.includes(f.id) && (
-                              <span className="selection-check">
-                                <Check size={13} />
-                              </span>
-                            )}
-                            {f.favorite && (
-                              <span className="favorite-mark">
-                                <Star size={13} fill="currentColor" />
-                              </span>
-                            )}
-                          </>
-                        )}
+                        <Preview file={f} compact />
                       </span>
                       <span className="file-description">
                         <span className="file-name" title={f.name}>
                           {f.name}
-                          {view === "list" && f.favorite && (
-                            <Star size={12} fill="currentColor" />
-                          )}
+                          {f.favorite && <Star size={12} fill="currentColor" />}
                         </span>
                         <span className="file-subline" title={f.path}>
                           {f.status !== "available"
                             ? statusNames[f.status]
-                            : view === "list"
-                              ? f.parent
-                              : `${size(f.bytes)} · ${date(f.modified)}`}
+                            : f.parent}
                         </span>
-                        {view === "grid" && (
-                          <span className="card-tags">
-                            {f.tags.length ? (
-                              f.tags
-                                .slice(0, 3)
-                                .map((t) => <span key={t.id}>{t.name}</span>)
-                            ) : (
-                              <span className="untagged">待添加标签</span>
-                            )}
-                            {f.tags.length > 3 && (
-                              <span>+{f.tags.length - 3}</span>
-                            )}
+                      </span>
+                      <span className="list-tags">
+                        {f.tags.slice(0, 2).map((t) => (
+                          <span className="tag-pill" key={t.id}>
+                            {t.name}
                           </span>
+                        ))}
+                        {f.tags.length > 2 && (
+                          <small>+{f.tags.length - 2}</small>
                         )}
                       </span>
-                      {view === "list" && (
-                        <>
-                          <span className="list-tags">
-                            {f.tags.slice(0, 2).map((t) => (
-                              <span className="tag-pill" key={t.id}>
-                                {t.name}
-                              </span>
-                            ))}
-                            {f.tags.length > 2 && (
-                              <small>+{f.tags.length - 2}</small>
-                            )}
-                          </span>
-                          <span className="list-date">{date(f.modified)}</span>
-                          <span className="list-size">{size(f.bytes)}</span>
-                        </>
-                      )}
+                      <span className="list-date">{date(f.modified)}</span>
+                      <span className="list-size">{size(f.bytes)}</span>
                     </button>
-                  ))}
-              </div>
-            ))}
-          </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           {hasMore && (
             <div className="load-more">
               <button

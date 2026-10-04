@@ -21,7 +21,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.ok(
     path.resolve(boot.dataPath).startsWith(path.join(root, "qa") + path.sep),
   );
-  assert.equal(boot.version, "0.2.0");
+  assert.equal(boot.version, require("../package.json").version);
   const checks = [];
   const pass = (s) => {
     checks.push(s);
@@ -35,7 +35,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     }
     throw Error("Poll timeout");
   };
-  await main.getByRole("button", { name: "标签浮窗 拖拽标注" }).click();
+  await main.getByRole("button", { name: "标签浮窗", exact: true }).click();
   const palette = await poll(
     () => context.pages().find((p) => p.url().includes("floating")),
     Boolean,

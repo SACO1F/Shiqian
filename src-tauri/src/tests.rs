@@ -605,6 +605,12 @@ fn restart_persists_settings_and_annotations() {
         .save_settings(&json!({"key":"theme","value":"dark"}))
         .unwrap();
     f.store
+        .save_settings(&json!({"key":"galleryColumns","value":5}))
+        .unwrap();
+    f.store
+        .save_settings(&json!({"key":"sidebarCollapsed","value":true}))
+        .unwrap();
+    f.store
         .save_note(&json!({"id":a.id,"text":"persisted","version":0}))
         .unwrap();
     let root = f.store.root.clone();
@@ -612,6 +618,59 @@ fn restart_persists_settings_and_annotations() {
     let reopened = Store::open(&root).unwrap();
     assert_eq!(reopened.file(&a.id).unwrap().note, "persisted");
     assert_eq!(reopened.bootstrap().unwrap()["settings"]["theme"], "dark");
+    assert_eq!(
+        reopened.bootstrap().unwrap()["settings"]["galleryColumns"],
+        5
+    );
+    assert_eq!(
+        reopened.bootstrap().unwrap()["settings"]["sidebarCollapsed"],
+        true
+    );
+}
+#[test]
+fn gallery_preferences_reject_invalid_values_without_overwriting_saved_choice() {
+    let mut f = Fixture::new();
+    f.store
+        .save_settings(&json!({"key":"galleryColumns","value":4}))
+        .unwrap();
+    f.store
+        .save_settings(&json!({"key":"sidebarCollapsed","value":false}))
+        .unwrap();
+    for value in [
+        json!(0),
+        json!(1),
+        json!(9),
+        json!(3.5),
+        json!("4"),
+        Value::Null,
+    ] {
+        assert!(f
+            .store
+            .save_settings(&json!({"key":"galleryColumns","value":value}))
+            .is_err());
+    }
+    assert!(f
+        .store
+        .save_settings(&json!({"key":"sidebarCollapsed","value":"true"}))
+        .is_err());
+    assert_eq!(
+        f.store.bootstrap().unwrap()["settings"]["galleryColumns"],
+        4
+    );
+    assert_eq!(
+        f.store.bootstrap().unwrap()["settings"]["sidebarCollapsed"],
+        false
+    );
+    let backup = f.files.join("layout.sqtagbackup");
+    f.store.export_backup(&backup).unwrap();
+    f.store
+        .save_settings(&json!({"key":"galleryColumns","value":8}))
+        .unwrap();
+    f.store.restore_backup(&backup).unwrap();
+    assert_eq!(
+        f.store.bootstrap().unwrap()["settings"]["galleryColumns"],
+        4
+    );
 }
 #[test]
 fn future_schema_is_rejected() {

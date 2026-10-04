@@ -354,8 +354,23 @@ impl Store {
     }
     pub fn save_settings(&mut self, v: &Value) -> Result<Value> {
         let name = str_arg(v, "key")?;
-        if !["theme", "views", "density", "details"].contains(&name) {
+        if ![
+            "theme",
+            "views",
+            "density",
+            "details",
+            "galleryColumns",
+            "sidebarCollapsed",
+        ]
+        .contains(&name)
+        {
             return Err(err("INVALID_INPUT", "不支持的设置"));
+        }
+        if name == "galleryColumns" && !v["value"].as_u64().is_some_and(|n| (2..=8).contains(&n)) {
+            return Err(err("INVALID_INPUT", "瀑布流列数必须在 2 到 8 之间"));
+        }
+        if name == "sidebarCollapsed" && !v["value"].is_boolean() {
+            return Err(err("INVALID_INPUT", "菜单收拢状态必须为布尔值"));
         }
         self.conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![name,v["value"].to_string()]).map_err(sql_err)?;
         Ok(json_ok())

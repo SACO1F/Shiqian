@@ -32,7 +32,9 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
   const file = (await api("query", { text: "品牌视觉参考", limit: 100 }))
     .files[0];
   const checks = [];
-  for (const view of ["网格视图", "列表视图"]) {
+  await p.getByLabel("搜索文件", { exact: true }).fill("品牌视觉参考");
+  await p.getByRole("option", { name: file.name, exact: true }).waitFor();
+  for (const view of ["瀑布流视图", "列表视图"]) {
     await p.getByLabel(view, { exact: true }).click();
     const tag = await api("tag.create", { name: `目标测试${view}` });
     const box = await p.locator(`[data-file-id="${file.id}"]`).boundingBox();
@@ -71,7 +73,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
   await new Promise((r) => setTimeout(r, 300));
   assert.equal((await api("file", { id: file.id })).tags.length, before);
   checks.push("Dropping on workspace chrome rejects annotation");
-  await p.getByLabel("网格视图", { exact: true }).click();
+  await p.getByLabel("瀑布流视图", { exact: true }).click();
+  await p.getByLabel("搜索文件", { exact: true }).fill("");
   fs.writeFileSync(
     path.join(root, "qa/tag-target-results.json"),
     JSON.stringify({ checks }, null, 2),

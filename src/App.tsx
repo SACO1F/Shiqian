@@ -17,6 +17,8 @@ import {
   LayoutGrid,
   List,
   PanelRight,
+  PanelLeftClose,
+  PanelLeftOpen,
   SlidersHorizontal,
   X,
   Undo2,
@@ -123,6 +125,10 @@ export default function App() {
   const [density, setDensity] = useState("comfortable");
   const [views, setViews] = useState<Record<string, string>>({});
   const [details, setDetails] = useState(true);
+  const [galleryColumns, setGalleryColumns] = useState(3);
+  const [columnCapacity, setColumnCapacity] = useState(8);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const settingsWrites = useRef<Promise<void>>(Promise.resolve());
   const [addMenu, setAddMenu] = useState(false);
   const [recursive, setRecursive] = useState(true);
   const [filters, setFilters] = useState(false);
@@ -244,6 +250,12 @@ export default function App() {
           setDensity(b.settings.density || "comfortable");
           setViews(b.settings.views || {});
           setDetails(b.settings.details !== false);
+          setGalleryColumns(
+            Number.isInteger(b.settings.galleryColumns)
+              ? Math.max(2, Math.min(8, b.settings.galleryColumns!))
+              : 3,
+          );
+          setSidebarCollapsed(b.settings.sidebarCollapsed === true);
           drafts.current = new NoteDrafts(b.dataPath);
           drafts.current.onChange = () => redraw((x) => x + 1);
           if (b.notice) tell(b.notice);
@@ -327,6 +339,7 @@ export default function App() {
         e.preventDefault();
         try {
           await flush();
+          await settingsWrites.current;
           const active = await api<ImportJob | null>("import.status");
           if (active && !active.done) {
             if (
@@ -524,13 +537,24 @@ export default function App() {
       setSelected([]);
     }, "已从文件库移除，可撤销");
   const setSetting = (key: string, value: unknown) => {
-    void run(async () => {
-      await api("settings.save", { key, value });
-      setBoot((b) =>
-        b ? { ...b, settings: { ...b.settings, [key]: value } } : b,
-      );
-    });
+    settingsWrites.current = settingsWrites.current
+      .then(async () => {
+        await api("settings.save", { key, value });
+        setBoot((b) =>
+          b ? { ...b, settings: { ...b.settings, [key]: value } } : b,
+        );
+      })
+      .catch((error) => tell(`偏好保存失败：${message(error)}`, true));
   };
+  const changeColumns = (columns: number) => {
+    setGalleryColumns(columns);
+    setSetting("galleryColumns", columns);
+  };
+  const toggleSidebar = () => {
+    setSidebarCollapsed(!sidebarCollapsed);
+    setSetting("sidebarCollapsed", !sidebarCollapsed);
+  };
+  const visibleColumns = Math.min(galleryColumns, columnCapacity);
   const backup = () =>
     run(async () => {
       await flush();
@@ -579,6 +603,12 @@ export default function App() {
       setTheme(b.settings.theme || "system");
       setDensity(b.settings.density || "comfortable");
       setDetails(b.settings.details !== false);
+      setGalleryColumns(
+        Number.isInteger(b.settings.galleryColumns)
+          ? Math.max(2, Math.min(8, b.settings.galleryColumns!))
+          : 3,
+      );
+      setSidebarCollapsed(b.settings.sidebarCollapsed === true);
       await fetchFiles(defaultQuery());
       tell(`恢复完成。恢复前的标注已保存在 ${restored.recoveryBackup}`);
       await api("refresh");
@@ -716,8 +746,11 @@ export default function App() {
       </div>
     );
   return (
-    <div className="app-shell" data-busy={busy}>
-      <aside className="sidebar">
+    <div
+      className={`app-shell ${sidebarCollapsed ? "sidebar-is-collapsed" : ""} ${view === "grid" ? "gallery-mode" : ""}`}
+      data-busy={busy}
+    >
+      <aside className="sidebar" id="workspace-sidebar" aria-label="工作台导航">
         <div className="brand">
           <img src="/icon.svg" alt="" />
           <div>
@@ -735,6 +768,8 @@ export default function App() {
             return (
               <button
                 key={s.id}
+                aria-label={s.name}
+                title={sidebarCollapsed ? s.name : undefined}
                 className={query.scope === s.id ? "active" : ""}
                 onClick={() => {
                   void flush().catch((e) => tell(message(e), true));
@@ -749,42 +784,57 @@ export default function App() {
             );
           })}
         </nav>
-        <div className="sidebar-section">
-          <span>标签索引</span>
+        {sidebarCollapsed ? (
           <button
-            className="icon-button"
-            aria-label="管理标签"
-            title="管理标签"
-            onClick={() => setModal("tags")}
+            className="sidebar-tags-expand icon-button"
+            aria-label="展开标签索引"
+            title="展开标签索引"
+            onClick={toggleSidebar}
           >
-            <Plus size={15} />
+            <Tags size={18} />
           </button>
-        </div>
-        <div className="sidebar-tags">
-          {boot.tags.length ? (
-            boot.tags.map((t) => (
+        ) : (
+          <>
+            <div className="sidebar-section">
+              <span>标签索引</span>
               <button
-                key={t.id}
-                className={query.include.includes(t.id) ? "active" : ""}
-                onClick={() => tagFilter(t.id)}
-                title={t.name}
+                className="icon-button"
+                aria-label="管理标签"
+                title="管理标签"
+                onClick={() => setModal("tags")}
               >
-                <span className="tag-dot" />
-                <span>{t.name}</span>
-                <small>{t.count}</small>
+                <Plus size={15} />
               </button>
-            ))
-          ) : (
-            <p>
-              从一个项目、一种用途，
-              <br />
-              或一个灵感开始标注。
-            </p>
-          )}
-        </div>
+            </div>
+            <div className="sidebar-tags">
+              {boot.tags.length ? (
+                boot.tags.map((t) => (
+                  <button
+                    key={t.id}
+                    className={query.include.includes(t.id) ? "active" : ""}
+                    onClick={() => tagFilter(t.id)}
+                    title={t.name}
+                  >
+                    <span className="tag-dot" />
+                    <span>{t.name}</span>
+                    <small>{t.count}</small>
+                  </button>
+                ))
+              ) : (
+                <p>
+                  从一个项目、一种用途，
+                  <br />
+                  或一个灵感开始标注。
+                </p>
+              )}
+            </div>
+          </>
+        )}
         <div className="sidebar-bottom">
           <button
             className="floating-launch"
+            aria-label="标签浮窗"
+            title={sidebarCollapsed ? "标签浮窗" : undefined}
             onClick={() => void run(() => api("floating.open"))}
           >
             <PanelsTopLeft size={17} />
@@ -797,7 +847,11 @@ export default function App() {
               所有标注留在本机<small>无需上传，也无需账号</small>
             </div>
           </div>
-          <button onClick={() => setModal("settings")}>
+          <button
+            onClick={() => setModal("settings")}
+            aria-label="偏好设置"
+            title={sidebarCollapsed ? "偏好设置" : undefined}
+          >
             <Settings size={17} />
             <span>偏好设置</span>
             <small>v{boot.version}</small>
@@ -806,6 +860,20 @@ export default function App() {
       </aside>
       <main className="workspace">
         <header className="topbar">
+          <button
+            className="icon-button sidebar-toggle"
+            aria-label={sidebarCollapsed ? "展开左侧菜单" : "收拢左侧菜单"}
+            title={sidebarCollapsed ? "展开左侧菜单" : "收拢左侧菜单"}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="workspace-sidebar"
+            onClick={toggleSidebar}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen size={19} />
+            ) : (
+              <PanelLeftClose size={19} />
+            )}
+          </button>
           <div className="breadcrumb">
             文件工作台<span>/</span>
             <strong>{currentScope.name}</strong>
@@ -934,7 +1002,8 @@ export default function App() {
           <div className="view-controls">
             <button
               className="icon-button"
-              aria-label="网格视图"
+              aria-label="瀑布流视图"
+              title="瀑布流视图"
               aria-pressed={view === "grid"}
               onClick={() => {
                 const v = { ...views, [query.scope]: "grid" };
@@ -1157,6 +1226,43 @@ export default function App() {
               <button onClick={() => setSelected([])}>取消选择</button>
             )}
           </div>
+          {view === "grid" && (
+            <div
+              className="gallery-controls"
+              role="group"
+              aria-label="图片显示大小"
+            >
+              <button
+                className="icon-button"
+                aria-label="放大图片"
+                title="放大图片，减少列数"
+                disabled={visibleColumns <= 2}
+                onClick={() => changeColumns(visibleColumns - 1)}
+              >
+                <Plus size={14} />
+              </button>
+              <input
+                type="range"
+                aria-label="瀑布流列数"
+                aria-valuetext={`${visibleColumns} 列`}
+                min={2}
+                max={columnCapacity}
+                step={1}
+                value={visibleColumns}
+                onChange={(event) => changeColumns(Number(event.target.value))}
+              />
+              <button
+                className="icon-button"
+                aria-label="缩小图片"
+                title="缩小图片，增加列数"
+                disabled={visibleColumns >= columnCapacity}
+                onClick={() => changeColumns(visibleColumns + 1)}
+              >
+                <Minus size={14} />
+              </button>
+              <output aria-live="polite">{visibleColumns} 列</output>
+            </div>
+          )}
           {selected.length > 0 ? (
             <div className="selection-actions">
               <button
@@ -1208,10 +1314,13 @@ export default function App() {
         </div>
         <div className="content-body">
           <FilesView
+            key={JSON.stringify(query)}
             files={results.files}
             total={results.total}
             view={view}
             density={density}
+            galleryColumns={galleryColumns}
+            onColumnCapacity={setColumnCapacity}
             selected={selected}
             onSelect={select}
             onOpen={openFile}
@@ -1222,7 +1331,7 @@ export default function App() {
             filtered={!!filterCount || !!query.text || query.scope !== "all"}
             onReset={resetFilters}
           />
-          {details && (
+          {details && (view === "list" || selectedFiles.length > 0) && (
             <Inspector
               files={selectedFiles}
               tags={boot.tags}

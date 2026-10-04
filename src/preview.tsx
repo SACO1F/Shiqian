@@ -88,10 +88,12 @@ export function Preview({
   file,
   large = false,
   compact = false,
+  onDimensions,
 }: {
   file: LocalFile;
   large?: boolean;
   compact?: boolean;
+  onDimensions?: (width: number, height: number) => void;
 }) {
   const [result, setResult] = useState<PreviewData>();
   useEffect(() => {
@@ -123,6 +125,12 @@ export function Preview({
         src={`data:image/png;base64,${result.data}`}
         alt={file.name}
         draggable={false}
+        onLoad={(event) =>
+          onDimensions?.(
+            event.currentTarget.naturalWidth,
+            event.currentTarget.naturalHeight,
+          )
+        }
       />
     );
   if (result.kind === "text")
