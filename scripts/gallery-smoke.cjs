@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const root = path.resolve(__dirname, "..");
+const release = `v${require("../package.json").version.replaceAll(".", "")}`;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 (async () => {
   const browser = await chromium.connectOverCDP("http://127.0.0.1:9223");
@@ -85,29 +86,39 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       .evaluate((el) => getComputedStyle(el).opacity),
     "0",
   );
-  const rectangles = await page.locator(".masonry-item").evaluateAll((els) =>
-    els.map((el) => {
-      const r = el.getBoundingClientRect();
-      return { x: r.x, y: r.y, w: r.width, h: r.height };
-    }),
-  );
-  assert.ok(new Set(rectangles.map((r) => Math.round(r.h))).size >= 3);
-  for (let i = 0; i < rectangles.length; i++)
-    for (let j = i + 1; j < rectangles.length; j++) {
-      const a = rectangles[i],
-        b = rectangles[j];
-      assert.ok(
-        a.x + a.w <= b.x + 1 ||
-          b.x + b.w <= a.x + 1 ||
-          a.y + a.h <= b.y + 1 ||
-          b.y + b.h <= a.y + 1,
-        "Masonry cards overlap",
-      );
-    }
+  const assertLayout = async (variety = false) => {
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".masonry-card") &&
+        !document.querySelector(".masonry-card .spin"),
+    );
+    await pause(100);
+    const rectangles = await page.locator(".masonry-card").evaluateAll((els) =>
+      els.map((el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.x, y: r.y, w: r.width, h: r.height };
+      }),
+    );
+    if (variety)
+      assert.ok(new Set(rectangles.map((r) => Math.round(r.h))).size >= 3);
+    for (let i = 0; i < rectangles.length; i++)
+      for (let j = i + 1; j < rectangles.length; j++) {
+        const a = rectangles[i],
+          b = rectangles[j];
+        assert.ok(
+          a.x + a.w <= b.x + 1 ||
+            b.x + b.w <= a.x + 1 ||
+            a.y + a.h <= b.y + 1 ||
+            b.y + b.h <= a.y + 1,
+          "Masonry cards overlap",
+        );
+      }
+  };
+  await assertLayout(true);
   pass(
     "Image-first masonry keeps varied aspect ratios, hides routine metadata and has no overlapping cards",
   );
-  await page.getByLabel("缩小图片", { exact: true }).click();
+  await page.getByLabel("增加列数", { exact: true }).click();
   await poll(
     () => api("bootstrap"),
     (b) => b.settings.galleryColumns === 4,
@@ -116,13 +127,15 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await page.locator(".masonry-space").getAttribute("data-columns"),
     "4",
   );
-  await page.getByLabel("放大图片", { exact: true }).click();
+  await assertLayout();
+  await page.getByLabel("减少列数", { exact: true }).click();
   await poll(
     () => api("bootstrap"),
     (b) => b.settings.galleryColumns === 3,
   );
+  await assertLayout();
   pass(
-    "Zoom controls change the number of image columns and persist to SQLite",
+    "Plus/minus controls increase/decrease image columns and persist to SQLite",
   );
   await page.getByLabel("收拢左侧菜单", { exact: true }).click();
   assert.ok((await page.locator(".sidebar").boundingBox()).width < 80);
@@ -146,6 +159,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   );
   await page.reload();
   await page.locator(".masonry-space[data-columns='8']").waitFor();
+  await assertLayout();
   assert.ok(await page.getByLabel("展开左侧菜单", { exact: true }).isVisible());
   pass(
     "Collapsed navigation stays usable; eight-column preference and collapse state survive reload",
@@ -177,11 +191,21 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     (count) => count === 0,
   );
   assert.ok((await page.locator(".masonry-card").count()) < 100);
+  for (const columns of [3, 4, 8]) {
+    await page
+      .getByRole("slider", { name: "瀑布流列数" })
+      .fill(String(columns));
+    await assertLayout();
+  }
   pass("Scrolling loads the next page while keeping the gallery virtualized");
   const search = page.getByLabel("搜索文件", { exact: true });
   await search.fill("画幅-001");
   const first = page.getByRole("option", { name: "画幅-001.png", exact: true });
   await first.waitFor();
+  await poll(
+    () => page.locator(".masonry-card").count(),
+    (count) => count === 1,
+  );
   assert.ok(
     await page.locator(".file-area").evaluate((el) => el.scrollTop < 5),
   );
@@ -225,20 +249,24 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   await page.getByLabel("文件排序", { exact: true }).selectOption("size");
   await page.mouse.move(650, 30);
   await pause(900);
-  await page.screenshot({ path: path.join(root, "qa/gallery-v021-light.png") });
+  await page.screenshot({
+    path: path.join(root, `qa/gallery-${release}-light.png`),
+  });
   await page.getByRole("button", { name: "偏好设置", exact: true }).click();
   await page.getByRole("button", { name: "深色", exact: true }).click();
   await page.getByRole("button", { name: "关闭对话框", exact: true }).click();
   await pause(350);
-  await page.screenshot({ path: path.join(root, "qa/gallery-v021-dark.png") });
+  await page.screenshot({
+    path: path.join(root, `qa/gallery-${release}-dark.png`),
+  });
   assert.deepEqual(errors, []);
   pass("Light and dark gallery renders have no frontend exceptions");
   fs.writeFileSync(
-    path.join(root, "qa/gallery-results-v021.json"),
+    path.join(root, `qa/gallery-results-${release}.json`),
     JSON.stringify({ checks, errors }, null, 2),
   );
   await browser.close();
 })().catch((error) => {
   console.error(error);
-  process.exitCode = 1;
+  process.exit(1);
 });

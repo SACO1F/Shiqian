@@ -28,3 +28,15 @@ for i in range(126):
 (root / "损坏画幅.png").write_bytes(b"Intentional invalid image fixture")
 (root / "参考文档.md").write_text("# Gallery fixture\nA document remains identifiable in image view.\n", encoding="utf-8")
 print(f"Created 128 synthetic gallery files in {root}")
+
+# Extreme aspect ratios exercise the gallery's 64/1200 px card limits.
+layout_root = root.parent / "layout-fixtures"
+layout_root.mkdir(exist_ok=True)
+for i, (w, h) in enumerate([(700, 6000), (6000, 700), (900, 1600), (1600, 900), (800, 800), (600, 2400), (900, 1600)]):
+    bg, ink = colors[i % len(colors)]
+    im = Image.new("RGB", (w, h), bg)
+    d = ImageDraw.Draw(im)
+    d.rectangle((20, 20, w - 20, h - 20), outline=ink, width=12)
+    d.text((40, 40), f"LAYOUT {i + 1}: {w} x {h}", fill=ink, font=font)
+    im.save(layout_root / f"布局-{i + 1:03}.png")
+print(f"Created 7 extreme-aspect layout fixtures in {layout_root}")

@@ -1,5 +1,6 @@
 import {
-  useEffect,
+  useCallback,
+  useLayoutEffect,
   useRef,
   useState,
   type MouseEvent,
@@ -12,19 +13,34 @@ import { Preview } from "./preview";
 
 function GalleryCard({
   file,
+  index,
   selected,
+  onSizeChange,
   onSelect,
   onOpen,
 }: {
   file: LocalFile;
+  index: number;
   selected: boolean;
+  onSizeChange: (index: number, height: number) => void;
   onSelect: (file: LocalFile, event: MouseEvent) => void;
   onOpen: (file: LocalFile) => void;
 }) {
   const [ratio, setRatio] = useState(file.kind === "pdf" ? 0.707 : 4 / 3);
+  const card = useRef<HTMLButtonElement>(null);
   const visual = file.kind === "image" || file.kind === "pdf";
+  useLayoutEffect(() => {
+    // Loading a preview can change its ratio without re-rendering the gallery.
+    // Update positions in the same commit, before the newly taller image paints.
+    if (card.current)
+      onSizeChange(
+        index,
+        Math.round(card.current.getBoundingClientRect().height),
+      );
+  }, [ratio, index, onSizeChange]);
   return (
     <button
+      ref={card}
       data-file-id={file.id}
       className={`file-card masonry-card ${selected ? "is-selected" : ""} ${file.status !== "available" ? "is-unavailable" : ""}`}
       role="option"
@@ -95,7 +111,8 @@ export function MasonryGallery({
   onOpen: (file: LocalFile) => void;
 }) {
   const columnWidth = Math.max(1, (width - gap * (columns - 1)) / columns);
-  const virtual = useVirtualizer({
+  const gallery = useRef<HTMLDivElement>(null);
+  const virtual = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: files.length,
     getScrollElement: () => scroll.current,
     getItemKey: (index) =>
@@ -108,15 +125,31 @@ export function MasonryGallery({
     gap,
     overscan: columns * 2,
   });
-  const previousWidth = useRef(columnWidth);
-  useEffect(() => {
-    if (previousWidth.current !== columnWidth) {
-      previousWidth.current = columnWidth;
-      virtual.measure();
-    }
-  }, [columnWidth, virtual]);
+  const onSizeChange = useCallback(
+    (index: number, height: number) => virtual.resizeItem(index, height),
+    [virtual],
+  );
+  useLayoutEffect(() => {
+    // A geometry change invalidates heights for off-screen cards too. Rebuild
+    // the estimates, then restore mounted cards' actual heights before paint.
+    // Clearing measurements in a passive effect can discard the ResizeObserver
+    // result without another DOM resize to trigger a replacement measurement.
+    virtual.measure();
+    virtual.getTotalSize();
+    gallery.current
+      ?.querySelectorAll<HTMLDivElement>(".masonry-item")
+      .forEach((element) => {
+        // Read directly even while scrolling; measureElement may use its cache
+        // or defer to ResizeObserver during a user scroll.
+        virtual.resizeItem(
+          Number(element.dataset.index),
+          Math.round(element.getBoundingClientRect().height),
+        );
+      });
+  }, [columnWidth, columns, gap, virtual]);
   return (
     <div
+      ref={gallery}
       className="masonry-space"
       data-columns={columns}
       style={{ height: virtual.getTotalSize() }}
@@ -134,6 +167,8 @@ export function MasonryGallery({
         >
           <GalleryCard
             file={files[item.index]}
+            index={item.index}
+            onSizeChange={onSizeChange}
             selected={selected.includes(files[item.index].id)}
             onSelect={onSelect}
             onOpen={onOpen}

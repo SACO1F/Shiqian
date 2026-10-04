@@ -4,13 +4,13 @@
   <p><strong>顺手贴上标签，随时找回灵感。</strong></p>
   <p>一个围绕本地文件、多标签与轻量浮窗设计的 Windows 资料整理工具。</p>
   <p>
-    <img alt="版本 0.2.1" src="https://img.shields.io/badge/version-0.2.1-527565" />
+    <img alt="版本 0.2.2" src="https://img.shields.io/badge/version-0.2.2-527565" />
     <img alt="Windows 11 x64" src="https://img.shields.io/badge/platform-Windows%2011%20x64-607D8B" />
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8" />
     <img alt="本地资料库" src="https://img.shields.io/badge/data-local%20first-8B7AA8" />
   </p>
   <p>
-    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.2.1">下载体验版</a> ·
+    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.2.2">下载体验版</a> ·
     <a href="docs/desktop-guide.md">使用与开发指南</a> ·
     <a href="docs/roadmap.md">开发路线</a> ·
     <a href="docs/agent-integration.md">Agent 结合分析</a>
@@ -25,7 +25,7 @@
 
 标签浮窗保持置顶，让整理动作留在手边：将标签拖向具体文件，或把一批文件拖到标签上。
 
-**v0.2.1 新增图片瀑布流**：按图片比例浏览，悬停查看名称，调节 2～8 列；左侧菜单可收拢为图标栏，给图片留下更多空间。[使用说明](docs/gallery-v0.2.1.md)
+**v0.2.2 修复瀑布流图片重叠**：切换列数和调整窗口后按实际卡片高度重新布局；「＋」增加列数，「－」减少列数。支持 2～8 列、悬停名称与可收拢侧栏。[使用说明](docs/gallery-v0.2.2.md)
 
 ![图片瀑布流与收拢侧栏](docs/images/gallery-light.png)
 
@@ -44,7 +44,7 @@
 
 </details>
 
-> 当前版本为 **v0.2.1 体验版**。向外拖标签面向 Windows 桌面、资源管理器及拾签文件卡片；完整跨窗口物理拖拽、多屏和混合 DPI 的验收仍待补齐。[查看测试范围](docs/validation-v0.2.md)
+> 当前版本为 **v0.2.2 体验版**。向外拖标签面向 Windows 桌面、资源管理器及拾签文件卡片；完整跨窗口物理拖拽、多屏和混合 DPI 的验收仍待补齐。[查看测试范围](docs/validation-v0.2.2.md)
 
 ## 目前能做什么
 
@@ -62,7 +62,7 @@
 
 ## 开始使用
 
-从 [Releases](https://github.com/SACO1F/Shiqian/releases/tag/v0.2.1) 下载 Windows x64 安装包。安装器按当前用户安装，并检查 WebView2 Runtime。运行环境就绪后，核心文件整理功能无需联网，也无需账号。
+从 [Releases](https://github.com/SACO1F/Shiqian/releases/tag/v0.2.2) 下载 Windows x64 安装包。安装器按当前用户安装，并检查 WebView2 Runtime。运行环境就绪后，核心文件整理功能无需联网，也无需账号。
 
 1. 加入文件或文件夹，在工作台查看资料。
 2. 从左下角打开「标签浮窗」，使用内置标签，或预设自己的标签。
@@ -115,6 +115,7 @@ Shiqian/
 | --- | --- |
 | 桌面文件整理与标签浮窗 v0.2.0 | 已实现，已有构建和主要流程验证 |
 | 图片瀑布流、列数调节与侧栏收拢 v0.2.1 | 已实现，验证详情见本版记录 |
+| 瀑布流重叠与加减号语义修复 v0.2.2 | 已实现，增加连续切换布局回归 |
 | 浮窗体验、跨窗口拖拽及显示环境兼容 | 下一轮优先事项 |
 | 标签治理、智能集合与目录监听 | 规划中 |
 | 浏览器协同 | 已有设计文档，尚无扩展实现 |
@@ -124,10 +125,13 @@ Shiqian/
 
 v0.2.1 另完成 **35 项后端测试**与 **50 项桌面／浮窗检查**；包含新瀑布流、缩放、侧栏、重启保存及原流程回归。[本版验证记录](docs/validation-v0.2.1.md)
 
+v0.2.2 针对图片重叠补充 **35 个布局场景、420 帧边界检查**，并通过 **8 项图库流程检查**。旧版问题已在独立库复现，修复版覆盖连续切换列数、缓存重载、长图与窗口变化。[修复验证记录](docs/validation-v0.2.2.md)
+
 ## 文档导航
 
 - [桌面开发规格](docs/desktop-development-spec-v0.1.md) · [浏览器扩展设计](docs/browser-extension-design-v0.2.md)
 - [v0.2.1 图片瀑布流指南](docs/gallery-v0.2.1.md) · [完整桌面指南](docs/desktop-guide.md) · [标签浮窗指南](docs/floating-tags-v0.2.md)
+- [v0.2.2 修复说明](docs/gallery-v0.2.2.md) · [布局回归验证](docs/validation-v0.2.2.md)
 - [后续开发路线](docs/roadmap.md) · [Agent 接入分析与建议](docs/agent-integration.md)
 - [v0.2 验证记录](docs/validation-v0.2.md) · [历史首版记录](docs/validation.md)
 - [项目打包与仓库说明](docs/project-handoff.md) · [第三方组件声明](THIRD_PARTY_NOTICES.md)

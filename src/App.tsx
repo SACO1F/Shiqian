@@ -1230,16 +1230,16 @@ export default function App() {
             <div
               className="gallery-controls"
               role="group"
-              aria-label="图片显示大小"
+              aria-label="图片列数"
             >
               <button
                 className="icon-button"
-                aria-label="放大图片"
-                title="放大图片，减少列数"
+                aria-label="减少列数"
+                title="减少一列"
                 disabled={visibleColumns <= 2}
                 onClick={() => changeColumns(visibleColumns - 1)}
               >
-                <Plus size={14} />
+                <Minus size={14} />
               </button>
               <input
                 type="range"
@@ -1253,12 +1253,12 @@ export default function App() {
               />
               <button
                 className="icon-button"
-                aria-label="缩小图片"
-                title="缩小图片，增加列数"
+                aria-label="增加列数"
+                title="增加一列"
                 disabled={visibleColumns >= columnCapacity}
                 onClick={() => changeColumns(visibleColumns + 1)}
               >
-                <Minus size={14} />
+                <Plus size={14} />
               </button>
               <output aria-live="polite">{visibleColumns} 列</output>
             </div>
