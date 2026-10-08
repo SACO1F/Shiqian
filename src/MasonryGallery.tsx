@@ -10,6 +10,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Check, Star, AlertCircle } from "lucide-react";
 import { type LocalFile, statusNames } from "./api";
 import { Preview } from "./preview";
+import { TagSource } from "./TagSource";
 
 function GalleryCard({
   file,
@@ -61,6 +62,14 @@ function GalleryCard({
             <Check size={14} />
           </span>
         )}
+        {file.tags.some((t) => t.source === "ai") && (
+          <span
+            className="gallery-ai-mark"
+            title="包含 AI 标注，选中文件可确认或重新识别"
+          >
+            ✦ AI
+          </span>
+        )}
         {file.favorite && (
           <span className="favorite-mark">
             <Star size={13} fill="currentColor" />
@@ -77,10 +86,12 @@ function GalleryCard({
             <span className="file-name">{file.name}</span>
             {!!file.tags.length && (
               <span className="gallery-tags">
-                {file.tags
-                  .slice(0, 3)
-                  .map((tag) => tag.name)
-                  .join(" · ")}
+                {file.tags.slice(0, 3).map((tag) => (
+                  <span className="gallery-tag" key={tag.id}>
+                    {tag.name}
+                    <TagSource tag={tag} />
+                  </span>
+                ))}
               </span>
             )}
           </span>

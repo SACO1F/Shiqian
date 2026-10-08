@@ -26,6 +26,7 @@ import {
   HardDrive,
   RefreshCw,
   Maximize2,
+  Sparkles,
 } from "lucide-react";
 import {
   LocalFile,
@@ -41,6 +42,8 @@ import {
 import { Preview } from "./preview";
 import { Draft } from "./notes";
 import { MasonryGallery } from "./MasonryGallery";
+import { TagSource } from "./TagSource";
+import { AutoTagSettings } from "./AutoTagSettings";
 
 export function Modal({
   title,
@@ -287,6 +290,7 @@ export function FilesView({
                         {f.tags.slice(0, 2).map((t) => (
                           <span className="tag-pill" key={t.id}>
                             {t.name}
+                            <TagSource tag={t} />
                           </span>
                         ))}
                         {f.tags.length > 2 && (
@@ -394,7 +398,10 @@ export function TagPicker({
                 setOpen(false);
               }}
             >
-              <span># {t.name}</span>
+              <span>
+                # {t.name}
+                <TagSource tag={t} pool />
+              </span>
               <small>{t.count}</small>
             </button>
           ))}
@@ -427,6 +434,9 @@ export function Inspector({
   onCopy,
   onRelink,
   onPreview,
+  onAnalyze,
+  onConfirmAI,
+  onConfigureAI,
   busy,
 }: {
   files: LocalFile[];
@@ -442,6 +452,9 @@ export function Inspector({
   onCopy: () => void;
   onRelink: () => void;
   onPreview: () => void;
+  onAnalyze: () => void;
+  onConfirmAI: (tag: Tag) => void;
+  onConfigureAI: () => void;
   busy: boolean;
 }) {
   const f = files[0];
@@ -558,6 +571,48 @@ export function Inspector({
       )}
       {tab === "annotation" || files.length > 1 ? (
         <>
+          <div className="inspector-ai">
+            <div className="inspector-ai-actions">
+              <button
+                className="button quiet"
+                disabled={busy}
+                onClick={onAnalyze}
+              >
+                <Sparkles size={14} />
+                AI{" "}
+                {files.length > 1 ? "批量识别" : f.aiTask ? "重新识别" : "识别"}
+              </button>
+              <button className="quiet-link" onClick={onConfigureAI}>
+                设置
+              </button>
+            </div>
+            {files.length === 1 && f.aiTask && (
+              <p
+                className={`ai-task-status status-${f.aiTask.status}`}
+                title={f.aiTask.error}
+              >
+                {f.aiTask.status === "running" && (
+                  <LoaderCircle size={12} className="spin" />
+                )}
+                {
+                  {
+                    queued: "等待 AI 分析",
+                    running: "AI 正在分析",
+                    done: "AI 标注已更新",
+                    failed: "AI 分析失败，可重新识别",
+                    unsupported: "暂不支持此文件内容",
+                    cancelled: "AI 分析已取消",
+                  }[f.aiTask.status]
+                }
+                {f.aiTask.error && (
+                  <small>{f.aiTask.error.replace(/^[A-Z_]+:\s*/, "")}</small>
+                )}
+              </p>
+            )}
+            <p className="subtle">
+              重新识别只更新待确认的 AI 标签，保留手工、文件夹及已确认标签。
+            </p>
+          </div>
           <div className="field-heading">
             <label>标签</label>
             <span>{allTags.length}</span>
@@ -570,6 +625,30 @@ export function Inspector({
               return (
                 <span className="editable-tag" key={t.id}>
                   <span>{t.name}</span>
+                  {files.length === 1 && <TagSource tag={t} />}
+                  {files.length > 1 &&
+                    files.some((f) =>
+                      f.tags.some((x) => x.id === t.id && x.source === "ai"),
+                    ) && (
+                      <span
+                        className="source-badge source-ai"
+                        title="部分文件由 AI 标注"
+                      >
+                        AI
+                      </span>
+                    )}
+                  {files.length === 1 &&
+                    t.source === "ai" &&
+                    !t.ai?.confirmed && (
+                      <button
+                        aria-label={`确认AI标签${t.name}`}
+                        title="确认后，重新识别也会保留此标签"
+                        disabled={busy}
+                        onClick={() => onConfirmAI(t)}
+                      >
+                        <Check size={12} />
+                      </button>
+                    )}
                   {files.length > 1 && count !== files.length && (
                     <small>
                       {count}/{files.length}
@@ -742,7 +821,10 @@ export function TagManager({
                 </form>
               ) : (
                 <>
-                  <span className="manager-tag-name">{t.name}</span>
+                  <span className="manager-tag-name">
+                    {t.name}
+                    <TagSource tag={t} pool />
+                  </span>
                   <small>{t.count} 个文件</small>
                   <button
                     className="icon-button"
@@ -843,6 +925,9 @@ export function SettingsPanel({
           </select>
         </div>
       </section>
+      <AutoTagSettings
+        folderEnabled={boot.settings.folderAutoTagging !== false}
+      />
       <section>
         <h3>保存你的整理成果</h3>
         <p className="muted">

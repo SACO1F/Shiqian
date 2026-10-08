@@ -111,15 +111,20 @@ impl Store {
                     return Err(err("FILE_REMOVED", "文件记录已移除，请刷新"));
                 }
                 names.push(f.name);
-                if self
+                let previous = crate::auto_tags::association_step(&self.conn, fid, tid)?;
+                let added = self
                     .conn
                     .execute(
                         "INSERT OR IGNORE INTO file_tags(file_id,tag_id) VALUES(?,?)",
                         params![fid, tid],
                     )
-                    .map_err(sql_err)?
-                    > 0
-                {
+                    .map_err(sql_err)?;
+                let confirmed = if added == 0 {
+                    self.conn.execute("UPDATE file_tags SET ai_meta=json_set(ai_meta,'$.confirmed',json('true')) WHERE file_id=? AND tag_id=? AND source='ai' AND json_extract(ai_meta,'$.confirmed')=0",params![fid,tid]).map_err(sql_err)?
+                } else {
+                    0
+                };
+                if added + confirmed > 0 {
                     applied += 1;
                     self.conn
                         .execute("UPDATE files SET version=version+1 WHERE id=?", [fid])
@@ -128,6 +133,9 @@ impl Store {
                         sql: "DELETE FROM file_tags WHERE file_id=? AND tag_id=?".into(),
                         args: vec![sv(fid), sv(tid)],
                     });
+                    if let Some(previous) = previous {
+                        undo.steps.push(previous);
+                    }
                     undo.steps.push(Step {
                         sql: "UPDATE files SET version=version+1 WHERE id=?".into(),
                         args: vec![sv(fid)],

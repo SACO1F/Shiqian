@@ -1,7 +1,7 @@
 {
   "name": "shiqian-desktop",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.3.0-alpha.1",
   "type": "module",
   "scripts": {
     "predev": "node scripts/prepare-pdf.mjs",
@@ -13,7 +13,8 @@
     "desktop": "tauri dev",
     "package": "tauri build",
     "test:core": "cargo test --manifest-path src-tauri/Cargo.toml --lib",
-    "format": "prettier --write src scripts/*.cjs scripts/*.mjs *.json vite.config.ts && cargo fmt --manifest-path src-tauri/Cargo.toml"
+    "format": "prettier --write src scripts/*.cjs scripts/*.mjs *.json vite.config.ts && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "test:auto-tags": "cargo test --manifest-path src-tauri/tests/core-harness/Cargo.toml --lib"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.0",

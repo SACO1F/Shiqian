@@ -54,6 +54,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     path.resolve(boot.dataPath).startsWith(path.join(root, "qa") + path.sep),
     "Refusing to run destructive fixture reset outside QA",
   );
+  // This suite exercises manually assigned tag counts. Automatic folder and AI
+  // flows have a separate desktop suite and stay disabled for these fixtures.
+  await api("settings.save", { key: "folderAutoTagging", value: false });
   for (const f of (await api("query", query)).files) {
     await api("note.save", { id: f.id, text: "", version: f.noteVersion });
     await api("files.favorite", {

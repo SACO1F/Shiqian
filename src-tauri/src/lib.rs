@@ -1,4 +1,9 @@
+mod ai;
+mod ai_worker;
 mod annotation;
+#[cfg(test)]
+mod auto_tag_tests;
+mod auto_tags;
 mod backup;
 mod db;
 mod floating;
@@ -14,7 +19,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
@@ -27,6 +32,7 @@ pub struct AppState {
     jobs: Arc<Mutex<HashMap<String, (ImportJob, Arc<AtomicBool>)>>>,
     drag_active: Arc<AtomicBool>,
     drag_cancel: Arc<AtomicBool>,
+    ai_generation: Arc<AtomicU64>,
 }
 impl AppState {
     fn new(root: &Path) -> Result<Self> {
@@ -35,6 +41,7 @@ impl AppState {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             drag_active: Arc::new(AtomicBool::new(false)),
             drag_cancel: Arc::new(AtomicBool::new(false)),
+            ai_generation: Arc::new(AtomicU64::new(0)),
         })
     }
     fn store(&self) -> Result<std::sync::MutexGuard<'_, Store>> {
@@ -182,6 +189,39 @@ impl AppState {
 
 fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -> Result<Value> {
     match action {
+        "ai.settings" => state.store()?.ai_settings(),
+        "ai.settings.save" => {
+            let mut store = state.store()?;
+            let result = store.save_ai_settings(v)?;
+            state.ai_generation.fetch_add(1, Ordering::SeqCst);
+            Ok(result)
+        }
+        "ai.test" => {
+            let (config, key) = {
+                let s = state.store()?;
+                (s.ai_config()?, ai::read_key(&s.root)?)
+            };
+            ai::test_connection(config, &key)
+        }
+        "ai.enqueue" => {
+            let store = state.store()?;
+            if !store.ai_config()?.enabled {
+                return Err(err(
+                    "AI_NOT_ENABLED",
+                    "请先在偏好设置配置并启用 AI 自动标注",
+                ));
+            }
+            store.queue_ai(&string_list(v, "ids"))?;
+            Ok(json_ok())
+        }
+        "ai.cancel" => {
+            let store = state.store()?;
+            state.ai_generation.fetch_add(1, Ordering::SeqCst);
+            store.conn.execute("UPDATE ai_jobs SET status='cancelled',error='已取消，可重新识别' WHERE status IN ('queued','running')",[]).map_err(sql_err)?;
+            Ok(json_ok())
+        }
+        "ai.confirm" => state.store()?.confirm_ai(v),
+        "folders.apply" => state.store()?.fill_folder_tags(),
         "floating.open" => floating::open(app, state),
         "floating.close" => floating::close(app, state),
         "floating.presets" => state.store()?.floating_presets(),
@@ -313,9 +353,9 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             {
                 return Err(err("IMPORT_BUSY", "请等待加入任务完成或取消后再恢复"));
             }
-            state
-                .store()?
-                .restore_backup(Path::new(str_arg(v, "path")?))
+            let mut store = state.store()?;
+            state.ai_generation.fetch_add(1, Ordering::SeqCst);
+            store.restore_backup(Path::new(str_arg(v, "path")?))
         }
         _ => Err(err("UNKNOWN_ACTION", action)),
     }
@@ -343,6 +383,11 @@ async fn api(
                     | "undo"
                     | "settings.save"
                     | "floating.save"
+                    | "folders.apply"
+                    | "ai.settings.save"
+                    | "ai.enqueue"
+                    | "ai.cancel"
+                    | "ai.confirm"
                     | "backup.restore"
             )
         {
@@ -383,6 +428,8 @@ pub fn run() {
             if std::env::var_os("SHIQIAN_DATA_DIR").is_some(){
                 for config in &app.config().app.windows {tauri::WebviewWindowBuilder::from_config(app,config)?.data_directory(root.join("webview")).build()?;}
             }
+            let ai_app=app.handle().clone();
+            ai_worker::start_worker(state.store.clone(),state.ai_generation.clone(),move || {let _=ai_app.emit("library-changed",());});
             let _=state.refresh_all(app.handle().clone());Ok(())
         })
         .invoke_handler(tauri::generate_handler![api])

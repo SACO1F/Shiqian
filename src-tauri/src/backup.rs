@@ -70,7 +70,7 @@ pub fn inspect_backup(path: &Path, root: &Path) -> Result<Inspected> {
         .map_err(|e| err("BACKUP_INVALID", e))?;
     let manifest: Manifest =
         toml::from_str(&manifest_text).map_err(|e| err("BACKUP_INVALID", e))?;
-    if manifest.backup_format != 1 || manifest.schema_version != 1 {
+    if manifest.backup_format != 1 || !(1..=2).contains(&manifest.schema_version) {
         return Err(err(
             "BACKUP_VERSION_UNSUPPORTED",
             "此备份需要其他版本的拾签",
@@ -149,10 +149,15 @@ impl Store {
                 .run_to_completion(64, Duration::from_millis(1), None)
                 .map_err(sql_err)?;
         }
+        // Credentials and service consent remain local; a restored backup never enables uploads.
+        target
+            .execute("DELETE FROM settings WHERE key='ai'", [])
+            .map_err(sql_err)?;
+        target.execute("UPDATE ai_jobs SET status='cancelled',error='从备份恢复后请重新识别' WHERE status IN ('queued','running')",[]).map_err(sql_err)?;
         validate_database(&target)?;
         let manifest = Manifest {
             backup_format: 1,
-            schema_version: 1,
+            schema_version: 2,
             app_version: env!("CARGO_PKG_VERSION").into(),
             created_at: now(),
             library_id: target
@@ -242,6 +247,12 @@ impl Store {
                 format!("{e}；恢复前备份：{}", recovery.display()),
             ));
         }
+        crate::auto_tags::migrate(&self.conn)?;
+        // Enforce local consent even when the backup came from another writer.
+        self.conn
+            .execute("DELETE FROM settings WHERE key='ai'", [])
+            .map_err(sql_err)?;
+        self.conn.execute("UPDATE ai_jobs SET status='cancelled',error='从备份恢复后请重新识别' WHERE status IN ('queued','running')", []).map_err(sql_err)?;
         self.validate()?;
         self.conn
             .execute_batch("PRAGMA foreign_keys=ON; PRAGMA wal_checkpoint(FULL);")

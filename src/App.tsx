@@ -174,17 +174,33 @@ export default function App() {
     return b;
   }, []);
   const fetchFiles = useCallback(
-    async (q: Query, append = false) => {
+    async (q: Query, append = false, preserveLoaded = false) => {
       if (append && loadLock.current) return;
       const token = ++request.current;
       loadLock.current = true;
       setLoading(true);
       try {
-        const r = await api<Results>("query", {
+        let r = await api<Results>("query", {
           ...q,
           offset: append ? resultsRef.current.files.length : 0,
         });
         if (token !== request.current) return;
+        // Background tagging must keep the pages the user has already opened.
+        const loaded = preserveLoaded ? resultsRef.current.files.length : 0;
+        while (!append && r.hasMore && r.files.length < loaded) {
+          const next = await api<Results>("query", {
+            ...q,
+            offset: r.files.length,
+          });
+          if (token !== request.current) return;
+          if (!next.files.length) break;
+          const files = [
+            ...r.files,
+            ...next.files.filter((f) => !r.files.some((x) => x.id === f.id)),
+          ];
+          if (files.length === r.files.length) break;
+          r = { ...next, offset: 0, files };
+        }
         setResults((old) => ({
           ...r,
           files: append
@@ -211,7 +227,7 @@ export default function App() {
   );
   const refresh = useCallback(async () => {
     await reload();
-    await fetchFiles(queryRef.current);
+    await fetchFiles(queryRef.current, false, true);
   }, [reload, fetchFiles]);
   const run = useCallback(
     async (task: () => Promise<unknown>, success?: string) => {
@@ -844,7 +860,12 @@ export default function App() {
           <div className="local-status">
             <span />
             <div>
-              所有标注留在本机<small>无需上传，也无需账号</small>
+              所有标注留在本机
+              <small>
+                {boot.settings.ai?.enabled
+                  ? "AI 分析已启用，使用所选服务"
+                  : "AI 分析未启用，无需上传"}
+              </small>
             </div>
           </div>
           <button
@@ -1365,6 +1386,26 @@ export default function App() {
               }
               onRelink={relink}
               onPreview={() => single && setQuick(single)}
+              onAnalyze={() =>
+                run(async () => {
+                  await api("ai.enqueue", {
+                    ids: selectedFiles.map((f) => f.id),
+                  });
+                  await refresh();
+                }, "已加入 AI 识别队列")
+              }
+              onConfirmAI={(tag) =>
+                single &&
+                run(async () => {
+                  await api("ai.confirm", {
+                    id: single.id,
+                    tagId: tag.id,
+                    version: single.version,
+                  });
+                  await refresh();
+                }, "AI 标签已确认，后续识别会保留")
+              }
+              onConfigureAI={() => setModal("settings")}
               busy={busy}
             />
           )}

@@ -166,10 +166,40 @@ impl Store {
                 ));
             }
             self.conn.execute("UPDATE files SET bytes=?,modified=?,revision=?,status='available',error='',removed_at=NULL,version=version+? WHERE id=?",params![m.bytes,m.modified,m.revision,if removed.is_some(){1}else{0},fid]).map_err(sql_err)?;
+            if removed.is_some() {
+                self.sync_folder_tag(&fid, &m.parent)?;
+                if self.ai_config()?.enabled {
+                    self.queue_ai(&[fid])?;
+                }
+            }
             return Ok(removed.is_some());
         }
-        self.conn.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,identity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![id(),m.path,m.path,m.parent,m.name,key(&m.name),m.extension,m.kind,m.bytes,m.modified,now(),m.revision,m.identity]).map_err(sql_err)?;
-        Ok(true)
+        self.conn
+            .execute_batch("SAVEPOINT add_file_auto_tags")
+            .map_err(sql_err)?;
+        let outcome = (|| {
+            let fid = id();
+            self.conn.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,identity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![fid,m.path,m.path,m.parent,m.name,key(&m.name),m.extension,m.kind,m.bytes,m.modified,now(),m.revision,m.identity]).map_err(sql_err)?;
+            self.sync_folder_tag(&fid, &m.parent)?;
+            if self.ai_config()?.enabled {
+                self.queue_ai(&[fid])?;
+            }
+            Ok(true)
+        })();
+        match outcome {
+            Ok(value) => {
+                self.conn
+                    .execute_batch("RELEASE add_file_auto_tags")
+                    .map_err(sql_err)?;
+                Ok(value)
+            }
+            Err(e) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO add_file_auto_tags; RELEASE add_file_auto_tags");
+                Err(e)
+            }
+        }
     }
     pub fn refresh_file(&mut self, fid: &str) -> Result<FileRecord> {
         let old = self.file(fid)?;
@@ -228,17 +258,46 @@ impl Store {
                 "此位置已关联其他记录，请查看已有文件",
             ));
         }
-        let tx = self.conn.transaction().map_err(sql_err)?;
-        tx.execute("UPDATE files SET path=?,path_key=?,parent=?,name=?,name_key=?,extension=?,kind=?,bytes=?,modified=?,revision=?,identity=?,status='available',error='',version=version+1 WHERE id=?",params![m.path,m.path,m.parent,m.name,key(&m.name),m.extension,m.kind,m.bytes,m.modified,m.revision,m.identity,fid]).map_err(sql_err)?;
-        tx.commit().map_err(sql_err)?;
-        let steps=vec![Step{sql:"UPDATE files SET path=?,path_key=?,parent=?,name=?,name_key=?,extension=?,kind=?,bytes=?,modified=?,revision=?,identity=?,status=?,error=?,version=version+1 WHERE id=?".into(),args:vec![sv(old.path.clone()),sv(old.path),sv(old.parent),sv(old.name.clone()),sv(key(&old.name)),sv(old.extension),sv(old.kind),iv(old.bytes),iv(old.modified),sv(old.revision),sv(old.identity),sv(old.status),sv(old.error),sv(fid)]}];
+        let mut source_steps = vec![Step {
+            sql: "DELETE FROM file_tags WHERE file_id=?".into(),
+            args: vec![sv(fid)],
+        }];
+        for tag in &old.tags {
+            if let Some(step) = crate::auto_tags::association_step(&self.conn, fid, &tag.id)? {
+                source_steps.push(step);
+            }
+        }
+        self.conn
+            .execute_batch("SAVEPOINT relink_auto_tags")
+            .map_err(sql_err)?;
+        let outcome = (|| {
+            self.conn.execute("UPDATE files SET path=?,path_key=?,parent=?,name=?,name_key=?,extension=?,kind=?,bytes=?,modified=?,revision=?,identity=?,status='available',error='',version=version+1 WHERE id=?",params![m.path,m.path,m.parent,m.name,key(&m.name),m.extension,m.kind,m.bytes,m.modified,m.revision,m.identity,fid]).map_err(sql_err)?;
+            self.sync_folder_tag(fid, &m.parent)?;
+            Ok(self.file(fid)?.version)
+        })();
+        let new_version = match outcome {
+            Ok(version) => {
+                self.conn
+                    .execute_batch("RELEASE relink_auto_tags")
+                    .map_err(sql_err)?;
+                version
+            }
+            Err(e) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO relink_auto_tags; RELEASE relink_auto_tags");
+                return Err(e);
+            }
+        };
+        let mut steps=vec![Step{sql:"UPDATE files SET path=?,path_key=?,parent=?,name=?,name_key=?,extension=?,kind=?,bytes=?,modified=?,revision=?,identity=?,status=?,error=?,version=version+1 WHERE id=?".into(),args:vec![sv(old.path.clone()),sv(old.path),sv(old.parent),sv(old.name.clone()),sv(key(&old.name)),sv(old.extension),sv(old.kind),iv(old.bytes),iv(old.modified),sv(old.revision),sv(old.identity),sv(old.status),sv(old.error),sv(fid)]}];
+        steps.extend(source_steps);
         self.remember(Undo {
             label: "重新关联文件".into(),
             steps,
             guards: vec![Guard {
                 table: "files".into(),
                 id: fid.into(),
-                version: old.version + 1,
+                version: new_version,
             }],
         });
         Ok(json_ok())

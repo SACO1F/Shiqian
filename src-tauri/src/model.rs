@@ -40,13 +40,36 @@ pub fn string_list(v: &Value, name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tag {
     pub id: String,
     pub name: String,
     pub count: i64,
     pub version: i64,
+    #[serde(default)]
+    pub created_by: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub ai: Option<AiProvenance>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProvenance {
+    pub model: String,
+    pub reason: String,
+    pub updated_at: i64,
+    pub confirmed: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTask {
+    pub status: String,
+    pub error: String,
+    pub updated_at: i64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,6 +93,7 @@ pub struct FileRecord {
     pub revision: String,
     pub identity: String,
     pub tags: Vec<Tag>,
+    pub ai_task: Option<AiTask>,
 }
 
 #[derive(Clone, Default, Debug, Deserialize, Serialize)]

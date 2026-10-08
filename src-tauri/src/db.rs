@@ -62,6 +62,7 @@ fn read_file(row: &Row<'_>) -> rusqlite::Result<FileRecord> {
         revision: row.get(15)?,
         identity: row.get(16)?,
         tags: vec![],
+        ai_task: None,
     })
 }
 
@@ -90,7 +91,7 @@ impl Store {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(sql_err)?;
-        if version > 1 {
+        if version > 2 {
             return Err(err(
                 "VERSION_UNSUPPORTED",
                 "资料库由较新版本创建，请升级拾签",
@@ -115,6 +116,24 @@ impl Store {
                 .map_err(sql_err)?;
             conn.execute_batch("COMMIT;").map_err(sql_err)?;
         }
+        if version == 1 {
+            let backups = root.join("backups");
+            std::fs::create_dir_all(&backups).map_err(|e| err("STORAGE_UNAVAILABLE", e))?;
+            let snapshot = backups.join("before-auto-tags-schema-v1.sqlite");
+            if !snapshot.exists() {
+                let mut target = Connection::open(snapshot).map_err(sql_err)?;
+                rusqlite::backup::Backup::new(&conn, &mut target)
+                    .map_err(sql_err)?
+                    .run_to_completion(64, std::time::Duration::from_millis(1), None)
+                    .map_err(sql_err)?;
+            }
+        }
+        crate::auto_tags::migrate(&conn)?;
+        conn.execute(
+            "UPDATE ai_jobs SET status='queued',error='' WHERE status='running'",
+            [],
+        )
+        .map_err(sql_err)?;
         let mut store = Self {
             conn,
             root: root.into(),
@@ -148,10 +167,11 @@ impl Store {
             .map_err(sql_err)?
             .ok_or_else(|| err("FILE_NOT_FOUND", "文件记录不存在或已移除"))?;
         f.tags = self.file_tags(id)?;
+        f.ai_task = self.ai_task(id)?;
         Ok(f)
     }
     pub fn file_tags(&self, id: &str) -> Result<Vec<Tag>> {
-        let mut st=self.conn.prepare("SELECT t.id,t.name,t.version FROM tags t JOIN file_tags ft ON t.id=ft.tag_id WHERE ft.file_id=? ORDER BY t.name_key").map_err(sql_err)?;
+        let mut st=self.conn.prepare("SELECT t.id,t.name,t.version,t.created_by,ft.source,ft.ai_meta FROM tags t JOIN file_tags ft ON t.id=ft.tag_id WHERE ft.file_id=? ORDER BY t.name_key").map_err(sql_err)?;
         let rows = st
             .query_map([id], |r| {
                 Ok(Tag {
@@ -159,6 +179,9 @@ impl Store {
                     name: r.get(1)?,
                     count: 0,
                     version: r.get(2)?,
+                    created_by: r.get(3)?,
+                    source: r.get(4)?,
+                    ai: serde_json::from_str(&r.get::<_, String>(5)?).ok(),
                 })
             })
             .map_err(sql_err)?;
@@ -166,7 +189,7 @@ impl Store {
             .map_err(sql_err)
     }
     pub fn tags(&self) -> Result<Vec<Tag>> {
-        let mut st=self.conn.prepare("SELECT t.id,t.name,t.version,COUNT(f.id) FROM tags t LEFT JOIN file_tags ft ON t.id=ft.tag_id LEFT JOIN files f ON f.id=ft.file_id AND f.removed_at IS NULL GROUP BY t.id ORDER BY t.last_used DESC,t.name_key").map_err(sql_err)?;
+        let mut st=self.conn.prepare("SELECT t.id,t.name,t.version,COUNT(f.id),t.created_by FROM tags t LEFT JOIN file_tags ft ON t.id=ft.tag_id LEFT JOIN files f ON f.id=ft.file_id AND f.removed_at IS NULL GROUP BY t.id ORDER BY t.last_used DESC,t.name_key").map_err(sql_err)?;
         let rows = st
             .query_map([], |r| {
                 Ok(Tag {
@@ -174,6 +197,8 @@ impl Store {
                     name: r.get(1)?,
                     version: r.get(2)?,
                     count: r.get(3)?,
+                    created_by: r.get(4)?,
+                    ..Default::default()
                 })
             })
             .map_err(sql_err)?;
@@ -293,18 +318,22 @@ impl Store {
             .map_err(sql_err)?;
         for f in &mut files {
             f.tags = self.file_tags(&f.id)?;
+            f.ai_task = self.ai_task(&f.id)?;
         }
         Ok(
             json!({"files":files,"total":total,"offset":q.offset,"hasMore":(q.offset+files.len())<(total as usize)}),
         )
     }
     pub fn create_tag(&mut self, name: &str) -> Result<Tag> {
+        self.create_tag_with_source(name, "manual")
+    }
+    pub fn create_tag_with_source(&mut self, name: &str, source: &str) -> Result<Tag> {
         let name = validate_tag(name)?;
         let k = key(&name);
         if let Some(t) = self
             .conn
             .query_row(
-                "SELECT id,name,version FROM tags WHERE name_key=?",
+                "SELECT id,name,version,created_by FROM tags WHERE name_key=?",
                 [&k],
                 |r| {
                     Ok(Tag {
@@ -312,6 +341,8 @@ impl Store {
                         name: r.get(1)?,
                         version: r.get(2)?,
                         count: 0,
+                        created_by: r.get(3)?,
+                        ..Default::default()
                     })
                 },
             )
@@ -323,8 +354,8 @@ impl Store {
         let tid = id();
         self.conn
             .execute(
-                "INSERT INTO tags(id,name,name_key,last_used) VALUES(?,?,?,?)",
-                params![tid, name, k, now()],
+                "INSERT INTO tags(id,name,name_key,last_used,created_by) VALUES(?,?,?,?,?)",
+                params![tid, name, k, now(), source],
             )
             .map_err(sql_err)?;
         Ok(Tag {
@@ -332,6 +363,8 @@ impl Store {
             name,
             version: 1,
             count: 0,
+            created_by: source.into(),
+            ..Default::default()
         })
     }
     pub fn save_note(&mut self, v: &Value) -> Result<Value> {
@@ -361,6 +394,7 @@ impl Store {
             "details",
             "galleryColumns",
             "sidebarCollapsed",
+            "folderAutoTagging",
         ]
         .contains(&name)
         {
@@ -369,7 +403,7 @@ impl Store {
         if name == "galleryColumns" && !v["value"].as_u64().is_some_and(|n| (2..=8).contains(&n)) {
             return Err(err("INVALID_INPUT", "瀑布流列数必须在 2 到 8 之间"));
         }
-        if name == "sidebarCollapsed" && !v["value"].is_boolean() {
+        if matches!(name, "sidebarCollapsed" | "folderAutoTagging") && !v["value"].is_boolean() {
             return Err(err("INVALID_INPUT", "菜单收拢状态必须为布尔值"));
         }
         self.conn.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![name,v["value"].to_string()]).map_err(sql_err)?;
@@ -398,8 +432,20 @@ pub fn validate_database(conn: &Connection) -> Result<()> {
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(sql_err)?;
-    if version != 1 {
+    if !(1..=2).contains(&version) {
         return Err(err("BACKUP_VERSION_UNSUPPORTED", "不支持此资料库版本"));
+    }
+    if version == 2 {
+        conn.prepare("SELECT created_by FROM tags LIMIT 0")
+            .map_err(sql_err)?;
+        conn.prepare("SELECT source,ai_meta FROM file_tags LIMIT 0")
+            .map_err(sql_err)?;
+        conn.prepare("SELECT file_id,status,error,updated_at FROM ai_jobs LIMIT 0")
+            .map_err(sql_err)?;
+        let invalid:i64=conn.query_row("SELECT COUNT(*) FROM file_tags WHERE NOT json_valid(ai_meta) OR source NOT IN ('manual','folder','ai')",[],|r|r.get(0)).map_err(sql_err)?;
+        if invalid != 0 {
+            return Err(err("BACKUP_INVALID", "标签来源记录无效"));
+        }
     }
     let check: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
@@ -506,9 +552,23 @@ impl Store {
                                 "DELETE FROM file_tags WHERE file_id=? AND tag_id=?",
                                 vec![sv(fid.clone()), sv(tid.clone())],
                             ));
+                        } else {
+                            let old = crate::auto_tags::association_step(&tx, &fid, tid)?;
+                            let confirmed=tx.execute("UPDATE file_tags SET ai_meta=json_set(ai_meta,'$.confirmed',json('true')) WHERE file_id=? AND tag_id=? AND source='ai' AND json_extract(ai_meta,'$.confirmed')=0",params![fid,tid]).map_err(sql_err)?;
+                            if confirmed > 0 {
+                                changed = true;
+                                undo.steps.push(step(
+                                    "DELETE FROM file_tags WHERE file_id=? AND tag_id=?",
+                                    vec![sv(fid.clone()), sv(tid.clone())],
+                                ));
+                                if let Some(old) = old {
+                                    undo.steps.push(old);
+                                }
+                            }
                         }
                     }
                     for tid in &remove {
+                        let original = crate::auto_tags::association_step(&tx, &fid, tid)?;
                         let n = tx
                             .execute(
                                 "DELETE FROM file_tags WHERE file_id=? AND tag_id=?",
@@ -517,10 +577,9 @@ impl Store {
                             .map_err(sql_err)?;
                         if n > 0 {
                             changed = true;
-                            undo.steps.push(step(
-                                "INSERT INTO file_tags(file_id,tag_id) VALUES(?,?)",
-                                vec![sv(fid.clone()), sv(tid.clone())],
-                            ));
+                            if let Some(original) = original {
+                                undo.steps.push(original);
+                            }
                         }
                     }
                     if changed {
@@ -635,11 +694,11 @@ impl Store {
             }
             "tags.delete" => {
                 let tid = str_arg(v, "id")?;
-                let (name, version, used): (String, i64, i64) = tx
+                let (name, version, used, created_by): (String, i64, i64, String) = tx
                     .query_row(
-                        "SELECT name,version,last_used FROM tags WHERE id=?",
+                        "SELECT name,version,last_used,created_by FROM tags WHERE id=?",
                         [tid],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                     )
                     .map_err(sql_err)?;
                 if v["version"].as_i64() != Some(version) {
@@ -654,22 +713,22 @@ impl Store {
                     .map_err(sql_err)?;
                 drop(st);
                 undo.steps.push(step(
-                    "INSERT INTO tags(id,name,name_key,version,last_used) VALUES(?,?,?,?,?)",
+                    "INSERT INTO tags(id,name,name_key,version,last_used,created_by) VALUES(?,?,?,?,?,?)",
                     vec![
                         sv(tid),
                         sv(name.clone()),
                         sv(key(&name)),
                         iv(version + 1),
                         iv(used),
+                        sv(created_by),
                     ],
                 ));
                 for (fid, ver) in files {
                     tx.execute("UPDATE files SET version=version+1 WHERE id=?", [&fid])
                         .map_err(sql_err)?;
-                    undo.steps.push(step(
-                        "INSERT INTO file_tags(file_id,tag_id) VALUES(?,?)",
-                        vec![sv(fid.clone()), sv(tid)],
-                    ));
+                    if let Some(original) = crate::auto_tags::association_step(&tx, &fid, tid)? {
+                        undo.steps.push(original);
+                    }
                     undo.steps.push(step(
                         "UPDATE files SET version=version+1 WHERE id=?",
                         vec![sv(fid.clone())],

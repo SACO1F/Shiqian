@@ -4,6 +4,9 @@ export interface Tag {
   name: string;
   count: number;
   version: number;
+  createdBy: "manual" | "folder" | "ai";
+  source: "manual" | "folder" | "ai" | "";
+  ai?: { model: string; reason: string; updatedAt: number; confirmed: boolean };
 }
 export interface LocalFile {
   id: string;
@@ -24,6 +27,12 @@ export interface LocalFile {
   revision: string;
   identity: string;
   tags: Tag[];
+  aiTask?: {
+    status:
+      "queued" | "running" | "done" | "failed" | "unsupported" | "cancelled";
+    error: string;
+    updatedAt: number;
+  };
 }
 export interface Query {
   scope: string;
@@ -58,11 +67,19 @@ export interface Bootstrap {
     details?: boolean;
     galleryColumns?: number;
     sidebarCollapsed?: boolean;
+    folderAutoTagging?: boolean;
+    ai?: AiConfig;
   };
   undoLabel?: string;
   dataPath: string;
   version: string;
   notice: string;
+}
+export interface AiConfig {
+  enabled: boolean;
+  endpoint: string;
+  model: string;
+  allowNewTags: boolean;
 }
 export interface ImportJob {
   id: string;

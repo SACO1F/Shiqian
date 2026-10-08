@@ -1,6 +1,7 @@
 node_modules/
 dist/
 src-tauri/target/
+src-tauri/tests/core-harness/target/
 src-tauri/gen/
 *.log
 .DS_Store
@@ -27,3 +28,5 @@ public/pdf-assets/
 
 # Keep the historical, synthetic-data verification evidence
 !docs/evidence/*.log
+.build/
+*.dpapi

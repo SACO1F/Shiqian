@@ -57,8 +57,10 @@ for (const block of lock.split("[[package]]").slice(1)) {
   if (dir) collect(`${name} ${version}`, dir);
   else missing.push(`${name} ${version} (source not cached)`);
 }
-let out =
-  "# Third-party software notices\n\n拾签 0.1.0 includes open-source components. The following license and notice texts accompany the locked build dependencies. Entries may include development or platform-specific dependencies that are not present in every binary.\n\n";
+const version = JSON.parse(
+  fs.readFileSync(path.join(root, "package.json"), "utf8"),
+).version;
+let out = `# Third-party software notices\n\n拾签 ${version} includes open-source components. The following license and notice texts accompany the locked build dependencies. Entries may include development or platform-specific dependencies that are not present in every binary.\n\n`;
 for (const [content, labels] of groups) {
   out += `## ${labels.join(" · ")}\n\n\`\`\`text\n${content}\n\`\`\`\n\n`;
 }

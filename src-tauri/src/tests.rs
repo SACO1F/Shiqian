@@ -128,7 +128,12 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
         let files = dir.path().join("原文件");
         fs::create_dir(&files).unwrap();
-        let store = Store::open(&dir.path().join("library")).unwrap();
+        let mut store = Store::open(&dir.path().join("library")).unwrap();
+        // Legacy workflow tests exercise explicitly assigned tags. Automatic
+        // folder defaults and queue behavior have their own integration tests.
+        store
+            .save_settings(&json!({"key":"folderAutoTagging","value":false}))
+            .unwrap();
         Self {
             _dir: dir,
             store,
@@ -718,7 +723,7 @@ fn representative_ten_thousand_file_search_benchmark() {
         tx.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,note,note_key) VALUES(?,?,?,?,?,?, 'txt','text',1024,100,100,'rev',?,?)",rusqlite::params![fid,format!("C:\\fixtures\\{name}"),format!("C:\\fixtures\\{name}"),"C:\\fixtures",name,key(&name),note,key(&note)]).unwrap();
         for j in 0..3 {
             tx.execute(
-                "INSERT INTO file_tags VALUES(?,?)",
+                "INSERT INTO file_tags(file_id,tag_id) VALUES(?,?)",
                 rusqlite::params![fid, tags[(i + j * 7) % tags.len()].id],
             )
             .unwrap();
