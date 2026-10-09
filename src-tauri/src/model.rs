@@ -50,6 +50,8 @@ pub struct Tag {
     #[serde(default)]
     pub created_by: String,
     #[serde(default)]
+    pub accepted: bool,
+    #[serde(default)]
     pub source: String,
     #[serde(default)]
     pub ai: Option<AiProvenance>,

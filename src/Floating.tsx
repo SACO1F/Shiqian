@@ -7,19 +7,31 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Grip,
+  Download,
+  Edit3,
+  Trash2,
+  Minus,
   ImagePlus,
   LoaderCircle,
   Plus,
-  Settings2,
+  Pin,
+  PinOff,
   Tag as TagIcon,
-  Undo2,
   X,
 } from "lucide-react";
 import { api, Bootstrap, message, Tag } from "./api";
+import { Modal } from "./components";
+import { ExportTagDialog } from "./ExportTagDialog";
+import { FloatingResizeHandles } from "./FloatingResizeHandles";
+import { useFloatingHistory } from "./useFloatingHistory";
 import "./floating.css";
+import { tagTone } from "./tagColors";
+import { useTagArrival, reducedMotion } from "./microMotion";
+import { FloatingHistory } from "./FloatingHistory";
+import { TaskGlyph } from "./TaskStatus";
 
 type Presets = { ids: string[]; tags: Tag[] };
+type WindowOptions = { collapsed: boolean; alwaysOnTop: boolean };
 type Annotation = {
   tagName: string;
   applied: number;
@@ -27,54 +39,116 @@ type Annotation = {
   imported: number;
   names: string[];
 };
-const colors = ["sage", "blue", "rose", "amber", "violet", "teal"];
-function tone(id: string) {
-  return colors[
-    [...id].reduce((s, c) => s + c.charCodeAt(0), 0) % colors.length
-  ];
-}
 
 export default function Floating() {
   const [presets, setPresets] = useState<Presets>({ ids: [], tags: [] });
   const ref = useRef(presets);
+  const paletteScroll = useRef<HTMLDivElement>(null);
   ref.current = presets;
   const [boot, setBoot] = useState<Bootstrap>();
+  const {
+    operations,
+    record,
+    ready: historyReady,
+  } = useFloatingHistory(boot?.dataPath);
+  useTagArrival(
+    paletteScroll,
+    boot?.dataPath,
+    presets.tags.filter((tag) => presets.ids.includes(tag.id)),
+  );
+  const [menuClosing, setMenuClosing] = useState(false);
+  const menuTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => () => clearTimeout(menuTimer.current), []);
   const [selected, setSelected] = useState("");
-  const [manage, setManage] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<{
+    tag: Tag;
+    mode: "rename" | "delete";
+  }>();
+  const [menu, setMenu] = useState<{ tag: Tag; x: number; y: number }>();
+  const menuSurface = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (menu && !menuClosing)
+      menuSurface.current
+        ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+        ?.focus();
+  }, [menu, menuClosing]);
+  const [exportTag, setExportTag] = useState<Tag>();
+  function highlightMenu(event: React.SyntheticEvent<HTMLDivElement>) {
+    const item = (event.target as HTMLElement).closest<HTMLElement>(
+      '[role="menuitem"]',
+    );
+    if (!item || (item as HTMLButtonElement).disabled) return;
+    const highlight =
+      event.currentTarget.querySelector<HTMLElement>(".menu-glide");
+    if (highlight)
+      Object.assign(highlight.style, {
+        transform: `translateY(${item.offsetTop}px)`,
+        height: `${item.offsetHeight}px`,
+        opacity: "1",
+      });
+  }
+  function dismissMenu() {
+    if (menuTimer.current) return;
+    const finish = () => {
+      setMenu(undefined);
+      setMenuClosing(false);
+      menuTrigger.current?.focus();
+      menuTimer.current = undefined;
+    };
+    if (reducedMotion()) {
+      finish();
+      return;
+    }
+    setMenuClosing(true);
+    menuTimer.current = setTimeout(finish, 140);
+  }
+  const actionLock = useRef(false);
   const [collapsed, setCollapsed] = useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(true);
   const [busy, setBusy] = useState(false);
   const [dragTag, setDragTag] = useState("");
   const [dropTag, setDropTag] = useState("");
   const [incoming, setIncoming] = useState(false);
   const [name, setName] = useState("");
   const [status, setStatus] = useState({
-    text: "标注留在本机，原文件保持原样。",
+    text: "就绪",
     error: false,
   });
   const gesture = useRef<
     { id: string; x: number; y: number; started: boolean } | undefined
   >(undefined);
   const notify = useCallback(
-    (text: string, error = false) => setStatus({ text, error }),
-    [],
+    (text: string, error = false, log = false) => {
+      setStatus({ text, error });
+      if (log) record(text);
+    },
+    [record],
   );
   const refresh = useCallback(async () => {
-    const [p, b] = await Promise.all([
+    const [p, b, options] = await Promise.all([
       api<Presets>("floating.presets"),
       api<Bootstrap>("bootstrap"),
+      api<WindowOptions>("floating.state"),
     ]);
     setPresets(p);
     setBoot(b);
+    setCollapsed(options.collapsed);
+    setAlwaysOnTop(options.alwaysOnTop);
     setSelected((old) => (p.ids.includes(old) ? old : p.ids[0] || ""));
   }, []);
   const run = useCallback(
     async (task: () => Promise<unknown>) => {
+      if (actionLock.current) return;
+      actionLock.current = true;
       setBusy(true);
       try {
         await task();
       } catch (e) {
         notify(message(e), true);
       } finally {
+        actionLock.current = false;
         setBusy(false);
       }
     },
@@ -112,6 +186,8 @@ export default function Floating() {
             r.applied
               ? `已为 ${target} 添加「${r.tagName}」${r.imported ? "，并加入文件库" : ""}`
               : `${target} 已有「${r.tagName}」`,
+            false,
+            true,
           );
         },
       ),
@@ -119,6 +195,7 @@ export default function Floating() {
         e.preventDefault();
         void api("floating.close");
       }),
+      win.onResized(() => setMenu(undefined)),
       win.onDragDropEvent(async ({ payload: p }) => {
         if (p.type === "leave") {
           setIncoming(false);
@@ -134,11 +211,7 @@ export default function Floating() {
         setDropTag(p.type === "drop" ? "" : id);
         if (p.type === "drop") {
           if (id) void apply(id, p.paths);
-          else
-            notify(
-              "请把文件放到一枚标签上；展开浮窗后可以看到所有预设。",
-              true,
-            );
+          else notify("请将文件放到标签上", true);
         }
       }),
     ];
@@ -147,14 +220,20 @@ export default function Floating() {
     };
   }, [refresh, notify, apply]);
   useEffect(() => {
+    document.documentElement.classList.add("floating-window");
     const media = matchMedia("(prefers-color-scheme: dark)");
-    const update = () =>
-      (document.documentElement.dataset.theme =
+    const update = () => {
+      const effective =
         !boot?.settings.theme || boot.settings.theme === "system"
           ? media.matches
             ? "dark"
             : "light"
-          : boot.settings.theme);
+          : boot.settings.theme;
+      document.documentElement.dataset.theme = effective;
+      void api("theme.sync", { theme: effective }).catch((error) =>
+        notify(message(error), true),
+      );
+    };
     update();
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
@@ -163,23 +242,39 @@ export default function Floating() {
     await api("floating.save", { ids });
     await refresh();
   };
-  const toggle = (tag: Tag) =>
-    void run(() =>
-      save(
-        ref.current.ids.includes(tag.id)
-          ? ref.current.ids.filter((id) => id !== tag.id)
-          : [...ref.current.ids, tag.id],
-      ),
-    );
+  const pin = (tag: Tag) =>
+    void run(async () => {
+      await save([...new Set([...ref.current.ids, tag.id])]);
+      setAdding(false);
+      setName("");
+      notify(`已添加「${tag.name}」`, false, true);
+    });
   const create = () =>
     void run(async () => {
       if (!name.trim()) return;
-      if (ref.current.ids.length >= 24)
-        throw Error("浮窗最多固定 24 个标签，请先移除一枚预设");
-      const tag = await api<Tag>("tag.create", { name });
+      const tag = await api<Tag>("tag.create", { name: name.trim() });
       await save([...new Set([...ref.current.ids, tag.id])]);
       setName("");
-      notify(`已将「${tag.name}」加入预设`);
+      setAdding(false);
+      notify(`已添加「${tag.name}」`, false, true);
+    });
+  const changeTag = () =>
+    void run(async () => {
+      if (!editing || (editing.mode === "rename" && !name.trim())) return;
+      await api(editing.mode === "rename" ? "tags.rename" : "tags.delete", {
+        id: editing.tag.id,
+        version: editing.tag.version,
+        name: name.trim(),
+      });
+      setEditing(undefined);
+      await refresh();
+      notify(
+        editing.mode === "rename"
+          ? `已将「${editing.tag.name}」改为「${name.trim()}」`
+          : `已删除「${editing.tag.name}」`,
+        false,
+        true,
+      );
     });
   const choose = () =>
     void run(async () => {
@@ -206,22 +301,41 @@ export default function Floating() {
     <div
       className={`floating-shell ${collapsed ? "is-collapsed" : ""} ${incoming ? "receiving-files" : ""}`}
       onKeyDown={(e) => {
-        if (e.key === "Escape") {
+        if (e.key === "Escape" && !adding && !editing && !exportTag) {
           void api("floating.cancel");
           gesture.current = undefined;
           setDragTag("");
-          setManage(false);
+          if (menu) dismissMenu();
         }
       }}
     >
+      {!collapsed && (
+        <FloatingResizeHandles
+          onError={(error) => notify(message(error), true)}
+        />
+      )}
       <header className="floating-titlebar">
         <div className="floating-handle" data-tauri-drag-region>
           <img src="/icon.svg" alt="" draggable={false} />
           <div data-tauri-drag-region>
             <strong data-tauri-drag-region>拾签</strong>
-            <span data-tauri-drag-region>随手标注</span>
           </div>
         </div>
+        <button
+          className={`float-icon float-pin ${alwaysOnTop ? "is-pinned" : ""}`}
+          title={alwaysOnTop ? "取消置顶" : "置顶浮窗"}
+          aria-label={alwaysOnTop ? "取消置顶" : "置顶浮窗"}
+          aria-pressed={alwaysOnTop}
+          disabled={busy}
+          onClick={() =>
+            void run(async () => {
+              await api("floating.topmost", { value: !alwaysOnTop });
+              setAlwaysOnTop(!alwaysOnTop);
+            })
+          }
+        >
+          {alwaysOnTop ? <Pin size={15} /> : <PinOff size={15} />}
+        </button>
         <button
           className="float-icon"
           title="打开工作台"
@@ -234,6 +348,7 @@ export default function Floating() {
           className="float-icon"
           title={collapsed ? "展开标签浮窗" : "收起标签浮窗"}
           aria-label={collapsed ? "展开标签浮窗" : "收起标签浮窗"}
+          disabled={busy}
           onClick={resize}
         >
           {collapsed ? <ChevronDown size={17} /> : <ChevronUp size={17} />}
@@ -242,6 +357,7 @@ export default function Floating() {
           className="float-icon"
           title="关闭浮窗"
           aria-label="关闭浮窗"
+          disabled={busy}
           onClick={() => void run(() => api("floating.close"))}
         >
           <X size={16} />
@@ -250,82 +366,28 @@ export default function Floating() {
       {!collapsed && (
         <>
           <div className="floating-intro">
-            <div>
-              <span className="float-eyebrow">
-                {manage ? "MY PRESETS" : "QUICK TAGGING"}
-              </span>
-              <h1>{manage ? "自己的常用标签" : "把标签，贴到文件上"}</h1>
-            </div>
-            <button
-              className={`float-icon ${manage ? "active" : ""}`}
-              aria-label={manage ? "返回标签面板" : "管理预设标签"}
-              title={manage ? "返回" : "管理预设"}
-              onClick={() => setManage(!manage)}
-            >
-              {manage ? <Check size={18} /> : <Settings2 size={18} />}
-            </button>
+            <h1>常用标签</h1>
+            <small>{pinned.length}</small>
           </div>
-          {manage ? (
-            <section className="preset-editor">
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  create();
-                }}
-              >
-                <input
-                  aria-label="新建预设标签"
-                  placeholder="例如：项目 A、壁纸、待参考"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  maxLength={80}
-                />
-                <button
-                  className="float-add"
-                  aria-label="创建并固定标签"
-                  disabled={busy || !name.trim()}
+          <p className="floating-guide">拖动标签标注文件 · 九宫格编辑</p>
+          <div className="palette-stage">
+            <div
+              className="palette-chips"
+              aria-label="常用标签"
+              ref={paletteScroll}
+            >
+              {pinned.map((tag) => (
+                <div
+                  key={tag.id}
+                  data-preset-id={tag.id}
+                  data-motion-tag={tag.id}
+                  className={`palette-chip tag-color tone-${tagTone(tag.id)} ${selected === tag.id ? "chosen" : ""} ${dropTag === tag.id ? "drop-active" : ""} ${dragTag === tag.id ? "drag-active" : ""}`}
                 >
-                  <Plus size={18} />
-                </button>
-              </form>
-              <p>勾选常用标签 · {pinned.length}/24</p>
-              <div className="preset-options">
-                {presets.tags.map((tag) => (
                   <button
-                    key={tag.id}
-                    className="preset-option"
-                    aria-pressed={presets.ids.includes(tag.id)}
-                    disabled={busy}
-                    onClick={() => toggle(tag)}
-                  >
-                    <span className={`tag-dot tone-${tone(tag.id)}`} />
-                    <span>{tag.name}</span>
-                    <span
-                      className={`preset-check ${presets.ids.includes(tag.id) ? "checked" : ""}`}
-                    >
-                      {presets.ids.includes(tag.id) && <Check size={12} />}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <small>取消勾选只会从浮窗移除，已有文件标注会保留。</small>
-            </section>
-          ) : (
-            <>
-              <p className="floating-guide">
-                拖到桌面、资源管理器或拾签内的文件上
-                <br />
-                也可以将多个文件拖到下面的标签上
-              </p>
-              <div className="palette-chips" aria-label="预设标签">
-                {pinned.map((tag) => (
-                  <button
-                    key={tag.id}
-                    data-preset-id={tag.id}
-                    className={`palette-chip tone-${tone(tag.id)} ${selected === tag.id ? "chosen" : ""} ${dropTag === tag.id ? "drop-active" : ""} ${dragTag === tag.id ? "drag-active" : ""}`}
+                    className="palette-tag"
                     aria-label={`标签：${tag.name}`}
                     aria-pressed={selected === tag.id}
-                    title={`拖动「${tag.name}」到文件；点击选中后也可选择文件标注`}
+                    title={`拖动「${tag.name}」到文件`}
                     disabled={busy}
                     onClick={() => setSelected(tag.id)}
                     onPointerDown={(e) => {
@@ -367,68 +429,353 @@ export default function Floating() {
                   >
                     <TagIcon size={14} />
                     <span>{tag.name}</span>
-                    <Grip size={13} className="tag-grip" />
+                  </button>
+                  <button
+                    className="tag-more"
+                    aria-label={`管理标签${tag.name}`}
+                    title="修改、导出或删除"
+                    aria-haspopup="menu"
+                    aria-expanded={menu?.tag.id === tag.id}
+                    disabled={busy}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      clearTimeout(menuTimer.current);
+                      menuTimer.current = undefined;
+                      setMenuClosing(false);
+                      menuTrigger.current = e.currentTarget;
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenu({
+                        tag,
+                        x: Math.min(r.right - 184, innerWidth - 196),
+                        y: Math.min(r.bottom + 5, innerHeight - 240),
+                      });
+                    }}
+                  >
+                    <svg
+                      width="15"
+                      height="15"
+                      viewBox="0 0 15 15"
+                      aria-hidden="true"
+                    >
+                      {Array.from({ length: 9 }, (_, i) => (
+                        <circle
+                          key={i}
+                          cx={3 + (i % 3) * 4.5}
+                          cy={3 + Math.floor(i / 3) * 4.5}
+                          r="1"
+                          fill="currentColor"
+                        />
+                      ))}
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              {!pinned.length && (
+                <p className="floating-empty">添加常用标签，开始标注</p>
+              )}
+            </div>
+            <button
+              className="glass-add"
+              aria-label="添加标签"
+              disabled={busy}
+              onWheel={(e) => {
+                const list = paletteScroll.current;
+                if (list)
+                  list.scrollBy(
+                    0,
+                    e.deltaY *
+                      (e.deltaMode === 1
+                        ? 16
+                        : e.deltaMode === 2
+                          ? list.clientHeight
+                          : 1),
+                  );
+              }}
+              onClick={() => {
+                setName("");
+                setAdding(true);
+                notify("就绪");
+              }}
+            >
+              <Plus size={15} />
+              添加标签
+            </button>
+          </div>
+          <div className="floating-assist">
+            <button
+              disabled={!selected || busy}
+              onClick={choose}
+              title={presets.tags.find((t) => t.id === selected)?.name}
+            >
+              <ImagePlus size={15} />
+              选择文件标注
+            </button>
+          </div>
+          {(busy || dragTag || incoming || status.error) && (
+            <div
+              className={`floating-status ${status.error && !dragTag ? "has-error" : ""}`}
+              role="status"
+            >
+              {busy ? (
+                <TaskGlyph status="working" />
+              ) : dragTag ? (
+                <TagIcon size={15} />
+              ) : (
+                <span className={`status-dot ${status.error ? "error" : ""}`} />
+              )}
+              <span>
+                {busy && !dragTag
+                  ? "正在处理…"
+                  : dragTag
+                    ? "移到文件上松手 · Esc 取消"
+                    : incoming
+                      ? "放到标签上完成标注"
+                      : status.text}
+              </span>
+            </div>
+          )}
+          <FloatingHistory operations={operations} ready={historyReady} />
+        </>
+      )}
+      {menu && (
+        <>
+          <button
+            className="float-menu-dismiss"
+            aria-label="关闭标签菜单"
+            onClick={dismissMenu}
+          />
+          <div
+            ref={menuSurface}
+            className={`float-tag-menu ${menuClosing ? "is-closing" : ""}`}
+            inert={menuClosing}
+            aria-hidden={menuClosing || undefined}
+            role="menu"
+            aria-label={`标签${menu.tag.name}的操作`}
+            style={{ left: Math.max(12, menu.x), top: Math.max(66, menu.y) }}
+            onPointerOver={highlightMenu}
+            onFocusCapture={highlightMenu}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                dismissMenu();
+              }
+              if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+                e.preventDefault();
+                const items = [
+                  ...e.currentTarget.querySelectorAll<HTMLButtonElement>(
+                    '[role="menuitem"]:not(:disabled)',
+                  ),
+                ];
+                const index = items.indexOf(
+                  document.activeElement as HTMLButtonElement,
+                );
+                const next =
+                  e.key === "Home"
+                    ? 0
+                    : e.key === "End"
+                      ? items.length - 1
+                      : (index +
+                          (e.key === "ArrowDown" ? 1 : -1) +
+                          items.length) %
+                        items.length;
+                items[next]?.focus();
+              }
+            }}
+          >
+            <span className="menu-glide" aria-hidden="true" />
+            <strong>{menu.tag.name}</strong>
+            <button
+              role="menuitem"
+              autoFocus
+              onClick={() => {
+                menuTrigger.current?.focus();
+                setEditing({ tag: menu.tag, mode: "rename" });
+                setName(menu.tag.name);
+                setMenu(undefined);
+                notify("就绪");
+              }}
+            >
+              <Edit3 size={14} />
+              修改名称
+            </button>
+            <button
+              role="menuitem"
+              disabled={menu.tag.count === 0}
+              onClick={() => {
+                menuTrigger.current?.focus();
+                setExportTag(menu.tag);
+                setMenu(undefined);
+              }}
+            >
+              <Download size={14} />
+              导出标签文件
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                const tag = menu.tag;
+                setMenu(undefined);
+                void run(async () => {
+                  await save(ref.current.ids.filter((id) => id !== tag.id));
+                  notify(`已从浮窗移除「${tag.name}」`, false, true);
+                });
+              }}
+            >
+              <Minus size={14} />
+              从浮窗移除
+            </button>
+            <button
+              role="menuitem"
+              className="danger"
+              onClick={() => {
+                menuTrigger.current?.focus();
+                setEditing({ tag: menu.tag, mode: "delete" });
+                setMenu(undefined);
+                notify("就绪");
+              }}
+            >
+              <Trash2 size={14} />
+              删除标签
+            </button>
+          </div>
+        </>
+      )}
+      {adding && (
+        <Modal
+          title="添加标签"
+          dismissDisabled={busy}
+          onClose={() => {
+            if (!busy) setAdding(false);
+          }}
+        >
+          <div className="modal-content float-editor">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                create();
+              }}
+            >
+              <input
+                autoFocus
+                aria-label="标签名称"
+                placeholder="搜索或新建标签"
+                value={name}
+                disabled={busy}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && e.nativeEvent.isComposing)
+                    e.preventDefault();
+                }}
+              />
+              <button
+                className="button primary"
+                disabled={busy || !name.trim()}
+              >
+                <Plus size={15} />
+                添加
+              </button>
+            </form>
+            <div className="float-existing-tags">
+              {presets.tags
+                .filter(
+                  (t) =>
+                    !presets.ids.includes(t.id) &&
+                    t.name
+                      .toLocaleLowerCase()
+                      .includes(name.trim().toLocaleLowerCase()),
+                )
+                .map((t) => (
+                  <button
+                    className={`tag-color tone-${tagTone(t.id)}`}
+                    key={t.id}
+                    disabled={busy}
+                    onClick={() => pin(t)}
+                  >
+                    <TagIcon size={14} />
+                    {t.name}
+                    <Plus size={13} />
                   </button>
                 ))}
-                <button
-                  className="palette-chip add-preset"
-                  onClick={() => setManage(true)}
-                >
-                  <Plus size={16} />
-                  <span>预设标签</span>
-                </button>
-              </div>
-              <div className="floating-assist">
-                <button disabled={!selected || busy} onClick={choose}>
-                  <ImagePlus size={15} />
-                  <span>选择文件标注</span>
-                </button>
-                <span>
-                  选中「
-                  {presets.tags.find((t) => t.id === selected)?.name || "标签"}
-                  」
-                </span>
-              </div>
-            </>
-          )}
-          <footer
-            className={`floating-status ${status.error && !dragTag ? "has-error" : ""}`}
-            role="status"
-          >
-            {busy ? (
-              <LoaderCircle size={15} className="spin" />
-            ) : dragTag ? (
-              <TagIcon size={15} />
-            ) : status.error ? (
-              <span className="status-dot error" />
-            ) : (
-              <span className="status-dot" />
+            </div>
+            {status.error && (
+              <p role="alert" className="tag-form-error">
+                {status.text}
+              </p>
             )}
-            <span>
-              {dragTag
-                ? "移到文件上松手标注 · Esc 取消"
-                : incoming
-                  ? "放到一枚标签上，即可完成标注"
-                  : status.text}
-            </span>
-            {!dragTag && boot?.undoLabel && (
-              <button
-                className="float-icon"
-                aria-label="撤销上一步标注操作"
-                title={`撤销：${boot.undoLabel}`}
-                disabled={busy}
-                onClick={() =>
-                  void run(async () => {
-                    await api("undo");
-                    notify("已撤销上一步操作");
-                  })
-                }
+          </div>
+        </Modal>
+      )}
+      {editing && (
+        <Modal
+          title={editing.mode === "rename" ? "修改标签" : "删除标签"}
+          dismissDisabled={busy}
+          onClose={() => {
+            if (!busy) setEditing(undefined);
+          }}
+        >
+          <div className="modal-content float-editor">
+            {editing.mode === "rename" ? (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  changeTag();
+                }}
               >
-                <Undo2 size={15} />
-              </button>
+                <input
+                  autoFocus
+                  aria-label="标签新名称"
+                  value={name}
+                  disabled={busy}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && e.nativeEvent.isComposing)
+                      e.preventDefault();
+                  }}
+                />
+                <button
+                  className="button primary"
+                  disabled={busy || !name.trim()}
+                >
+                  <Check size={15} />
+                  保存
+                </button>
+              </form>
+            ) : (
+              <>
+                <p>
+                  删除「{editing.tag.name}」及其 {editing.tag.count}{" "}
+                  个文件关联？原文件保留。
+                </p>
+                <button
+                  className="button primary"
+                  disabled={busy}
+                  onClick={changeTag}
+                >
+                  删除标签
+                </button>
+              </>
             )}
-          </footer>
-        </>
+            {status.error && (
+              <p role="alert" className="tag-form-error">
+                {status.text}
+              </p>
+            )}
+          </div>
+        </Modal>
+      )}
+      {exportTag && (
+        <ExportTagDialog
+          tag={exportTag}
+          onClose={() => setExportTag(undefined)}
+          onComplete={(result) =>
+            notify(
+              `已导出「${exportTag.name}」的 ${result.copied} 个文件`,
+              false,
+              true,
+            )
+          }
+        />
       )}
     </div>
   );

@@ -1,3 +1,4 @@
+const { getSearch } = require("./search-control.cjs");
 // Run against an isolated QA WebView, never a personal library.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -51,7 +52,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   await page.reload();
   await page.locator(".masonry-space").waitFor();
   // Filtering also permits reruns after the larger gallery suite has populated this QA library.
-  await page.getByLabel("搜索文件", { exact: true }).fill("画幅-00");
+  await (await getSearch(page)).fill("画幅-00");
   const snapshots = [];
   const inspect = async (label) => {
     await page.waitForFunction(() => {
@@ -164,7 +165,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   await inspect("Return from list view with cached images");
   await page.reload();
   await page.locator(".masonry-space[data-columns='4']").waitFor();
-  await page.getByLabel("搜索文件", { exact: true }).fill("画幅-00");
+  await (await getSearch(page)).fill("画幅-00");
   await inspect("Reload saved four-column layout");
   await page.mouse.move(650, 30);
   await page.screenshot({
@@ -182,7 +183,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       if ((await api("import.status"))?.done) break;
       await pause(100);
     }
-    await page.getByLabel("搜索文件", { exact: true }).fill("布局-");
+    await (await getSearch(page)).fill("布局-");
     await page.waitForFunction(() => {
       const cards = [...document.querySelectorAll(".masonry-card")];
       return (

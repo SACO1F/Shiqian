@@ -1,0 +1,52 @@
+.tone-sage {
+  --tag-bg: #dcebd7;
+  --tag-ink: #375b31;
+}
+.tone-blue {
+  --tag-bg: #d9eaff;
+  --tag-ink: #315f91;
+}
+.tone-rose {
+  --tag-bg: #f7dfe5;
+  --tag-ink: #8c4058;
+}
+.tone-amber {
+  --tag-bg: #f7e8bf;
+  --tag-ink: #805b18;
+}
+.tone-violet {
+  --tag-bg: #e9dff8;
+  --tag-ink: #6d4693;
+}
+.tone-teal {
+  --tag-bg: #d3eee8;
+  --tag-ink: #286c60;
+}
+:root[data-theme="dark"] .tone-sage {
+  --tag-bg: #354e39;
+  --tag-ink: #c5e5ba;
+}
+:root[data-theme="dark"] .tone-blue {
+  --tag-bg: #2e4865;
+  --tag-ink: #b9d9ff;
+}
+:root[data-theme="dark"] .tone-rose {
+  --tag-bg: #62404c;
+  --tag-ink: #f4c4d3;
+}
+:root[data-theme="dark"] .tone-amber {
+  --tag-bg: #5c4c2b;
+  --tag-ink: #f3d797;
+}
+:root[data-theme="dark"] .tone-violet {
+  --tag-bg: #4e3f64;
+  --tag-ink: #ddc5fc;
+}
+:root[data-theme="dark"] .tone-teal {
+  --tag-bg: #2b514a;
+  --tag-ink: #b1e5d8;
+}
+.tag-color {
+  background: var(--tag-bg);
+  color: var(--tag-ink);
+}

@@ -145,6 +145,9 @@ pub fn inspect(path: &Path) -> Result<FileMeta> {
 
 impl Store {
     pub fn add_file(&mut self, m: &FileMeta) -> Result<bool> {
+        self.add_file_with_ai(m, true)
+    }
+    pub fn add_file_with_ai(&mut self, m: &FileMeta, allow_auto_ai: bool) -> Result<bool> {
         if Path::new(&m.path).starts_with(&self.root) {
             return Err(err("APP_DATA_EXCLUDED", "已排除应用资料库、缓存及备份目录"));
         }
@@ -168,7 +171,7 @@ impl Store {
             self.conn.execute("UPDATE files SET bytes=?,modified=?,revision=?,status='available',error='',removed_at=NULL,version=version+? WHERE id=?",params![m.bytes,m.modified,m.revision,if removed.is_some(){1}else{0},fid]).map_err(sql_err)?;
             if removed.is_some() {
                 self.sync_folder_tag(&fid, &m.parent)?;
-                if self.ai_config()?.enabled {
+                if allow_auto_ai && self.ai_config()?.enabled {
                     self.queue_ai(&[fid])?;
                 }
             }
@@ -181,7 +184,7 @@ impl Store {
             let fid = id();
             self.conn.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,identity) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",params![fid,m.path,m.path,m.parent,m.name,key(&m.name),m.extension,m.kind,m.bytes,m.modified,now(),m.revision,m.identity]).map_err(sql_err)?;
             self.sync_folder_tag(&fid, &m.parent)?;
-            if self.ai_config()?.enabled {
+            if allow_auto_ai && self.ai_config()?.enabled {
                 self.queue_ai(&[fid])?;
             }
             Ok(true)

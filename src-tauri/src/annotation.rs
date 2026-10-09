@@ -23,12 +23,15 @@ impl Store {
         } else {
             let mut ids = vec![];
             for name in ["灵感", "参考素材", "待处理", "已完成"] {
-                ids.push(self.create_tag(name)?.id);
+                let tag = self.create_tag(name)?;
+                if tag.created_by != "folder" {
+                    ids.push(tag.id);
+                }
             }
             self.save_floating_presets(&ids)?;
             ids
         };
-        let tags = self.tags()?;
+        let tags = self.floating_tag_pool()?;
         let ids: Vec<_> = ids
             .into_iter()
             .filter(|id| tags.iter().any(|t| &t.id == id))
@@ -36,10 +39,17 @@ impl Store {
         Ok(json!({"ids":ids,"tags":tags}))
     }
     pub fn save_floating_presets(&mut self, ids: &[String]) -> Result<Value> {
-        if ids.len() > 24 {
-            return Err(err("INVALID_INPUT", "浮窗最多固定 24 个标签"));
+        let tags = self.tag_pool()?;
+        if ids
+            .iter()
+            .any(|id| tags.iter().any(|t| &t.id == id && t.created_by == "folder"))
+        {
+            return Err(err(
+                "FOLDER_TAG_NOT_ALLOWED",
+                "文件夹标签不能添加到标签浮窗",
+            ));
         }
-        let tags = self.tags()?;
+        let tags = self.floating_tag_pool()?;
         let mut unique = HashSet::new();
         if ids
             .iter()
@@ -50,12 +60,19 @@ impl Store {
         self.conn.execute("INSERT INTO settings(key,value) VALUES('floatingTags',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!(ids).to_string()]).map_err(sql_err)?;
         Ok(json_ok())
     }
+    pub fn floating_tag_pool(&self) -> Result<Vec<Tag>> {
+        Ok(self
+            .tag_pool()?
+            .into_iter()
+            .filter(|tag| tag.created_by != "folder")
+            .collect())
+    }
     /// Import and annotate as a single database operation. Failed batches leave no
     /// partial imports. Undo removes only newly added associations, retaining files.
     pub fn annotate(&mut self, v: &Value) -> Result<Value> {
         let tid = str_arg(v, "tagId")?;
         let tag = self
-            .tags()?
+            .tag_pool()?
             .into_iter()
             .find(|t| t.id == tid)
             .ok_or_else(|| err("TAG_NOT_FOUND", "标签已删除，请重新选择"))?;
@@ -84,7 +101,7 @@ impl Store {
             let mut unique: HashSet<String> = ids.into_iter().collect();
             let mut imported = 0;
             for m in metas {
-                if self.add_file(&m)? {
+                if self.add_file_with_ai(&m, false)? {
                     imported += 1;
                 }
                 let fid: String = self

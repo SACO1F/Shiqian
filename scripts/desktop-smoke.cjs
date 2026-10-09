@@ -1,3 +1,4 @@
+const { getSearch } = require("./search-control.cjs");
 // Runs against our isolated, real Tauri WebView over CDP. No mocked IPC or files.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -138,7 +139,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   );
   assert.equal((await api("file", { id: image.id })).tags.length, 2);
   pass("Undo preserves tag associations that predated the batch");
-  await page.getByLabel("搜索文件", { exact: true }).fill("绿色主视觉");
+  await (await getSearch(page)).fill("绿色主视觉");
   await poll(
     () => page.locator(".file-card").count(),
     (n) => n === 1,
@@ -148,7 +149,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     image.name,
   );
   pass("Search finds a file by its saved note");
-  await page.getByLabel("搜索文件", { exact: true }).fill("no-such-file-83721");
+  await (await getSearch(page)).fill("no-such-file-83721");
   await poll(
     () => page.locator(".file-card").count(),
     (n) => n === 0,

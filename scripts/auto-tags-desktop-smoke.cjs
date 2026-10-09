@@ -215,6 +215,127 @@ async function poll(fn, test, label) {
     await pause(700);
     assert.equal(requests.length, previous);
     pass("duplicate imports do not repeat AI requests");
+    const manualImport = path.join(
+      root,
+      "qa/auto-tags-fixtures/标签直接导入.txt",
+    );
+    fs.writeFileSync(
+      manualImport,
+      "synthetic manually classified material",
+      "utf8",
+    );
+    const requestCount = requests.length;
+    await api("annotation.apply", {
+      tagId: existing.id,
+      paths: [manualImport],
+    });
+    await pause(800);
+    const manuallyClassified = (
+      await api("query", { text: "标签直接导入", limit: 100 })
+    ).files[0];
+    assert.ok(manuallyClassified);
+    assert.equal(manuallyClassified.aiTask, null);
+    assert.equal(requests.length, requestCount);
+    assert.ok(
+      manuallyClassified.tags.some(
+        (t) => t.id === existing.id && t.source === "manual",
+      ),
+    );
+    pass(
+      "label-based import does not queue inference or send requests while automatic AI is enabled",
+    );
+    const textFile = files.files.find((f) => f.extension === "txt");
+    const generated = textFile.tags.find((t) => t.name === "几何图案");
+    assert.ok(
+      !(await api("bootstrap")).tags.some((t) => t.id === generated.id),
+    );
+    await api("floating.open");
+    const candidatePalette = await poll(
+      async () =>
+        browser
+          .contexts()[0]
+          .pages()
+          .find((p) => p.url().includes("floating")),
+      Boolean,
+      "floating candidates",
+    );
+    await candidatePalette
+      .getByRole("button", { name: "添加标签", exact: true })
+      .click();
+    const candidates = candidatePalette.getByRole("dialog", {
+      name: "添加标签",
+      exact: true,
+    });
+    assert.equal(
+      await candidates
+        .getByRole("button", { name: "几何图案", exact: true })
+        .count(),
+      0,
+    );
+    await candidatePalette.getByLabel("关闭对话框", { exact: true }).click();
+    pass(
+      "unconfirmed generated labels are absent from bootstrap and floating add-label candidates",
+    );
+    await api("floating.save", { ids: [] });
+    await page.setViewportSize({ width: 1360, height: 900 });
+    await page.reload();
+    await page.locator(`[data-file-id="${textFile.id}"]`).click();
+    await page.getByLabel("确认AI标签几何图案", { exact: true }).click();
+    await poll(
+      () => api("file", { id: textFile.id }),
+      (f) => f.tags.some((t) => t.id === generated.id && t.ai?.confirmed),
+      "accept generated tag",
+    );
+    const acceptedTag = page
+      .locator(".inspector .editable-tag")
+      .filter({ hasText: "几何图案" });
+    await acceptedTag.locator(".source-ai").waitFor({ state: "hidden" });
+    assert.equal(await acceptedTag.locator(".source-ai").count(), 0);
+    assert.equal(
+      await acceptedTag
+        .getByLabel("确认AI标签几何图案", { exact: true })
+        .count(),
+      0,
+    );
+    await poll(
+      () => api("floating.presets"),
+      (p) => p.ids.includes(generated.id),
+      "auto pin",
+    );
+    const floating = browser
+      .contexts()[0]
+      .pages()
+      .find((p) => p.url().includes("floating"));
+    assert.ok(floating);
+    await floating
+      .getByRole("button", { name: "标签：几何图案", exact: true })
+      .waitFor();
+    assert.equal(
+      (await api("bootstrap")).tags.find((t) => t.id === generated.id).accepted,
+      true,
+    );
+    const acceptanceOut = path.join(root, "qa/sidebar-ai");
+    fs.mkdirSync(acceptanceOut, { recursive: true });
+    await page.screenshot({
+      path: path.join(acceptanceOut, "accepted-ai-workspace.png"),
+    });
+    await floating.screenshot({
+      path: path.join(acceptanceOut, "accepted-ai-floating.png"),
+    });
+    // Other unreviewed associations of the same label still show their AI marker.
+    await page.locator(`[data-file-id="${photo.id}"]`).click();
+    assert.equal(
+      await page
+        .locator(".inspector .editable-tag")
+        .filter({ hasText: "几何图案" })
+        .getByLabel("AI 待确认", { exact: true })
+        .count(),
+      1,
+    );
+    await api("floating.close");
+    pass(
+      "accepting a generated AI label removes its badge and updates the open floating palette automatically, retaining other pending associations",
+    );
     await api("ai.confirm", {
       id: photo.id,
       tagId: existing.id,
@@ -291,10 +412,14 @@ async function poll(fn, test, label) {
     await page.reload();
     await page.setViewportSize({ width: 1360, height: 980 });
     await page.locator(`[data-file-id="${photo.id}"]`).click();
-    await page
-      .locator(".inspector")
-      .getByLabel("AI 已确认", { exact: true })
-      .waitFor();
+    await page.locator(".inspector .editable-tag").first().waitFor();
+    assert.equal(
+      await page
+        .locator(".inspector")
+        .getByLabel("AI 已确认", { exact: true })
+        .count(),
+      0,
+    );
     assert.ok(
       await page
         .locator(".inspector")

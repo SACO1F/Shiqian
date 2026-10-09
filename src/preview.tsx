@@ -20,6 +20,14 @@ interface PreviewData {
 let active = 0;
 const waiting: Array<() => void> = [];
 const previews = new Map<string, Promise<PreviewData>>();
+const readyPreviews = new Map<string, PreviewData>();
+const ratios = new Map<string, number>();
+export function previewKey(file: LocalFile) {
+  return `${file.id}:${file.revision}:${file.identity}:${file.status}`;
+}
+export function previewRatio(file: LocalFile) {
+  return ratios.get(previewKey(file)) ?? (file.kind === "pdf" ? 0.707 : 4 / 3);
+}
 async function limited<T>(fn: () => Promise<T>): Promise<T> {
   if (active >= 3) await new Promise<void>((r) => waiting.push(r));
   active++;
@@ -32,9 +40,11 @@ async function limited<T>(fn: () => Promise<T>): Promise<T> {
 }
 export function clearPreviews() {
   previews.clear();
+  readyPreviews.clear();
+  ratios.clear();
 }
 async function load(file: LocalFile, large: boolean): Promise<PreviewData> {
-  const key = `${file.id}:${file.revision}:${file.identity}:${file.status}:${large}`;
+  const key = `${previewKey(file)}:${large}`;
   if (!previews.has(key)) {
     const promise = limited(async () => {
       const value = await api<PreviewData>("preview", { id: file.id, large });
@@ -75,10 +85,23 @@ async function load(file: LocalFile, large: boolean): Promise<PreviewData> {
       } finally {
         await task.destroy();
       }
-    }).catch((error) => {
-      previews.delete(key);
-      return { kind: "error", revision: file.revision, error: message(error) };
-    });
+    })
+      .then((value) => {
+        if (previews.get(key) === promise) {
+          readyPreviews.set(key, value);
+          if (readyPreviews.size > 300)
+            readyPreviews.delete(readyPreviews.keys().next().value!);
+        }
+        return value;
+      })
+      .catch((error) => {
+        previews.delete(key);
+        return {
+          kind: "error",
+          revision: file.revision,
+          error: message(error),
+        };
+      });
     previews.set(key, promise);
     if (previews.size > 300) previews.delete(previews.keys().next().value!);
   }
@@ -95,10 +118,13 @@ export function Preview({
   compact?: boolean;
   onDimensions?: (width: number, height: number) => void;
 }) {
-  const [result, setResult] = useState<PreviewData>();
+  const key = `${previewKey(file)}:${large}`;
+  const [result, setResult] = useState<PreviewData | undefined>(() =>
+    readyPreviews.get(key),
+  );
   useEffect(() => {
     let alive = true;
-    setResult(undefined);
+    setResult(readyPreviews.get(key));
     if (
       file.kind === "image" ||
       file.kind === "pdf" ||
@@ -125,12 +151,15 @@ export function Preview({
         src={`data:image/png;base64,${result.data}`}
         alt={file.name}
         draggable={false}
-        onLoad={(event) =>
-          onDimensions?.(
-            event.currentTarget.naturalWidth,
-            event.currentTarget.naturalHeight,
-          )
-        }
+        onLoad={(event) => {
+          const { naturalWidth: width, naturalHeight: height } =
+            event.currentTarget;
+          if (width > 0 && height > 0) {
+            ratios.set(previewKey(file), width / height);
+            if (ratios.size > 300) ratios.delete(ratios.keys().next().value!);
+            onDimensions?.(width, height);
+          }
+        }}
       />
     );
   if (result.kind === "text")

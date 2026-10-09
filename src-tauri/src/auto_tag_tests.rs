@@ -79,6 +79,300 @@ fn response(tags: Value) -> Value {
     json!({"choices":[{"finish_reason":"stop","message":{"content":json!({"tags":tags}).to_string()}}]})
 }
 
+#[test]
+fn folder_tags_remain_searchable_but_cannot_be_pinned_even_from_legacy_settings() {
+    let mut f = Fixture::new();
+    let file = f.add("文件夹索引.txt", "document", b"fixture");
+    let folder = file
+        .tags
+        .iter()
+        .find(|tag| tag.created_by == "folder")
+        .unwrap();
+    let manual = f.store.create_tag("普通分类").unwrap();
+    assert!(f
+        .store
+        .tag_pool()
+        .unwrap()
+        .iter()
+        .any(|tag| tag.id == folder.id));
+    let presets = f.store.floating_presets().unwrap();
+    assert!(!presets["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tag| tag["id"] == folder.id));
+    f.store.save_floating_presets(&[manual.id.clone()]).unwrap();
+    assert!(f
+        .store
+        .save_floating_presets(&[manual.id.clone(), folder.id.clone()])
+        .unwrap_err()
+        .starts_with("FOLDER_TAG_NOT_ALLOWED"));
+    assert_eq!(
+        f.store.floating_presets().unwrap()["ids"],
+        json!([manual.id])
+    );
+    f.store
+        .conn
+        .execute(
+            "UPDATE settings SET value=? WHERE key='floatingTags'",
+            [json!([folder.id, manual.id]).to_string()],
+        )
+        .unwrap();
+    assert_eq!(
+        f.store.floating_presets().unwrap()["ids"],
+        json!([manual.id])
+    );
+    assert!(f
+        .store
+        .file(&file.id)
+        .unwrap()
+        .tags
+        .iter()
+        .any(|tag| tag.id == folder.id));
+    // Typing the name in the create field must not convert a folder label to manual.
+    assert_eq!(
+        f.store.create_tag(&folder.name).unwrap().created_by,
+        "folder"
+    );
+}
+
+#[test]
+fn default_floating_shortcuts_skip_folder_name_collisions() {
+    let mut f = Fixture::new();
+    let folder = f.store.create_tag_with_source("灵感", "folder").unwrap();
+    let presets = f.store.floating_presets().unwrap();
+    assert_eq!(presets["ids"].as_array().unwrap().len(), 3);
+    assert!(!presets["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tag| tag["id"] == folder.id));
+}
+
+#[test]
+fn confirming_ai_association_with_folder_label_does_not_pin_it() {
+    let mut f = Fixture::new();
+    let file = f.add("确认目录建议.txt", "document", b"fixture");
+    let folder = f
+        .store
+        .create_tag_with_source("其他目录", "folder")
+        .unwrap();
+    let (current, token) = f.start(&file.id);
+    f.store
+        .apply_ai_checked(
+            &current,
+            token,
+            "test",
+            &[(Some(folder.id.clone()), folder.name.clone(), "测试".into())],
+        )
+        .unwrap();
+    let current = f.store.file(&file.id).unwrap();
+    f.store
+        .confirm_ai(&json!({"id":file.id,"tagId":folder.id,"version":current.version}))
+        .unwrap();
+    assert!(
+        f.store
+            .file(&file.id)
+            .unwrap()
+            .tags
+            .iter()
+            .find(|tag| tag.id == folder.id)
+            .unwrap()
+            .ai
+            .as_ref()
+            .unwrap()
+            .confirmed
+    );
+    assert!(!f.store.floating_presets().unwrap()["ids"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(folder.id)));
+}
+
+#[test]
+fn manual_tag_import_does_not_queue_ai_but_regular_import_still_does() {
+    let mut f = Fixture::new();
+    f.store.save_ai_settings(&json!({"config":{"enabled":true,"endpoint":"http://127.0.0.1:11434/v1","model":"local-vision","allowNewTags":true}})).unwrap();
+    let tag = f.store.create_tag("手工分类").unwrap();
+    let manual_path = f.files.join("标签导入.txt");
+    fs::write(&manual_path, b"synthetic manual import").unwrap();
+    f.store
+        .annotate(&json!({"tagId":tag.id,"paths":[manual_path]}))
+        .unwrap();
+    let fid: String = f
+        .store
+        .conn
+        .query_row(
+            "SELECT id FROM files WHERE name='标签导入.txt'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(f.store.ai_task(&fid).unwrap().is_none());
+    assert!(f
+        .store
+        .file(&fid)
+        .unwrap()
+        .tags
+        .iter()
+        .any(|t| t.id == tag.id && t.source == "manual"));
+    // Re-importing a removed file through a label also skips automatic inference.
+    let file = f.store.file(&fid).unwrap();
+    f.store
+        .mutate(
+            "files.remove",
+            &json!({"ids":[fid],"versions":{fid.clone():file.version}}),
+        )
+        .unwrap();
+    f.store
+        .annotate(&json!({"tagId":tag.id,"paths":[manual_path]}))
+        .unwrap();
+    assert!(f.store.ai_task(&fid).unwrap().is_none());
+    let regular = f.add("普通导入.txt", "text", b"synthetic regular import");
+    assert_eq!(
+        f.store.ai_task(&regular.id).unwrap().unwrap().status,
+        "queued"
+    );
+}
+
+#[test]
+fn suggestions_enter_pool_after_acceptance_and_orphans_are_removed_without_losing_shared_tags() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", "text", b"a");
+    let b = f.add("b.txt", "text", b"b");
+    f.apply(&a.id, &["AI共享建议"]);
+    f.apply(&b.id, &["AI共享建议"]);
+    let current = f.store.file(&a.id).unwrap();
+    let tag = current
+        .tags
+        .iter()
+        .find(|t| t.name == "AI共享建议")
+        .unwrap()
+        .clone();
+    assert!(!f.store.tag_pool().unwrap().iter().any(|t| t.id == tag.id));
+    assert!(!f.store.bootstrap().unwrap()["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == tag.id));
+    assert!(f.store.save_floating_presets(&[tag.id.clone()]).is_err());
+    f.store
+        .confirm_ai(&json!({"id":a.id,"tagId":tag.id,"version":current.version}))
+        .unwrap();
+    assert!(f.store.tag_pool().unwrap().iter().any(|t| t.id == tag.id));
+    f.patch(&a.id, vec![], vec![tag.id.clone()]);
+    assert!(!f.store.tag_pool().unwrap().iter().any(|t| t.id == tag.id));
+    assert!(f
+        .store
+        .file(&b.id)
+        .unwrap()
+        .tags
+        .iter()
+        .any(|t| t.id == tag.id));
+    f.patch(&b.id, vec![], vec![tag.id.clone()]);
+    assert!(!f.store.tags().unwrap().iter().any(|t| t.id == tag.id));
+    f.store.undo_last().unwrap();
+    assert!(f
+        .store
+        .file(&b.id)
+        .unwrap()
+        .tags
+        .iter()
+        .any(|t| t.id == tag.id && !t.ai.as_ref().unwrap().confirmed));
+    assert!(!f.store.tag_pool().unwrap().iter().any(|t| t.id == tag.id));
+}
+
+#[test]
+fn reanalysis_cleans_orphan_suggestions_and_manual_creation_explicitly_adopts_a_suggestion() {
+    let mut f = Fixture::new();
+    let a = f.add("a.txt", "text", b"a");
+    f.apply(&a.id, &["过期建议"]);
+    f.apply(&a.id, &["新建议"]);
+    assert!(!f.store.tags().unwrap().iter().any(|t| t.name == "过期建议"));
+    let adopted = f.store.create_tag("新建议").unwrap();
+    assert_eq!(adopted.created_by, "manual");
+    assert!(f
+        .store
+        .tag_pool()
+        .unwrap()
+        .iter()
+        .any(|t| t.id == adopted.id));
+    f.patch(&a.id, vec![], vec![adopted.id.clone()]);
+    assert!(f
+        .store
+        .tag_pool()
+        .unwrap()
+        .iter()
+        .any(|t| t.id == adopted.id));
+}
+
+#[test]
+fn accepting_ai_removes_pool_marker_and_pins_without_duplicates_or_capacity_loss() {
+    let mut f = Fixture::new();
+    let file = f.add("accepted.txt", "text", b"synthetic design reference");
+    f.apply(&file.id, &["几何图案"]);
+    let current = f.store.file(&file.id).unwrap();
+    let tag = current.tags.iter().find(|t| t.source == "ai").unwrap();
+    let tag_id = tag.id.clone();
+    let mut pins: Vec<String> = (0..24)
+        .map(|n| f.store.create_tag(&format!("固定标签{n}")).unwrap().id)
+        .collect();
+    f.store.save_floating_presets(&pins).unwrap();
+    assert!(
+        !f.store
+            .tags()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == tag_id)
+            .unwrap()
+            .accepted
+    );
+    assert!(f
+        .store
+        .confirm_ai(&json!({"id":file.id,"tagId":tag_id,"version":current.version-1}))
+        .is_err());
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!(pins));
+    f.store
+        .confirm_ai(&json!({"id":file.id,"tagId":tag_id,"version":current.version}))
+        .unwrap();
+    pins.push(tag_id.clone());
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!(pins));
+    assert!(
+        f.store
+            .tags()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == tag_id)
+            .unwrap()
+            .accepted
+    );
+    let confirmed = f.store.file(&file.id).unwrap();
+    let accepted = confirmed.tags.iter().find(|t| t.id == tag_id).unwrap();
+    assert_eq!(accepted.source, "ai");
+    assert!(accepted.ai.as_ref().unwrap().confirmed);
+    f.store
+        .confirm_ai(&json!({"id":file.id,"tagId":tag_id,"version":confirmed.version}))
+        .unwrap();
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!(pins));
+    // Undo returns the association to review and hides the unapproved shortcut.
+    f.store.undo_last().unwrap();
+    assert!(
+        !f.store
+            .tags()
+            .unwrap()
+            .iter()
+            .find(|t| t.id == tag_id)
+            .unwrap()
+            .accepted
+    );
+    pins.retain(|id| id != &tag_id);
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!(pins));
+    let root = f.store.root.clone();
+    drop(f.store);
+    let mut reopened = Store::open(&root).unwrap();
+    assert_eq!(reopened.floating_presets().unwrap()["ids"], json!(pins));
+}
+
 fn backup_fixture(f: &Fixture, legacy: bool) -> PathBuf {
     use sha2::{Digest, Sha256};
     let db = f.dir.path().join("backup-fixture.sqlite");
@@ -675,4 +969,59 @@ fn compatible_http_transport_and_response_parsing_use_a_real_local_server() {
     .unwrap();
     assert_eq!(ai::parse_response(&value, &[], true).unwrap()[0].1, "几何");
     server.join().unwrap();
+}
+
+#[test]
+fn scoped_ai_cancel_preserves_other_work_and_rejects_late_results() {
+    let mut f = Fixture::new();
+    let a = f.add("cancel-target.txt", "text", b"a");
+    let b = f.add("other-queued.txt", "text", b"b");
+    let c = f.add("already-complete.txt", "text", b"c");
+    f.apply(&c.id, &["已生成"]);
+    let before = f.store.file(&c.id).unwrap();
+    let (snapshot, token) = f.start(&a.id);
+    f.store.queue_ai(&[b.id.clone()]).unwrap();
+    assert_eq!(
+        f.store
+            .cancel_ai_files(&[a.id.clone(), c.id.clone()])
+            .unwrap()["cancelled"],
+        1
+    );
+    assert_eq!(f.store.ai_task(&b.id).unwrap().unwrap().status, "queued");
+    assert_eq!(f.store.ai_task(&c.id).unwrap().unwrap().status, "done");
+    assert_eq!(f.store.file(&c.id).unwrap().version, before.version);
+    let choices = vec![(None, "迟到结果".into(), "reason".into())];
+    assert!(f
+        .store
+        .apply_ai_checked(&snapshot, token, "model", &choices)
+        .is_err());
+    assert_eq!(f.store.ai_task(&a.id).unwrap().unwrap().status, "cancelled");
+    assert!(!f.store.tags().unwrap().iter().any(|t| t.name == "迟到结果"));
+    f.store.queue_ai(&[a.id.clone()]).unwrap();
+    assert!(f.store.ai_task(&a.id).unwrap().unwrap().updated_at > token);
+    assert!(f
+        .store
+        .apply_ai_checked(&snapshot, token, "model", &choices)
+        .is_err());
+    assert_eq!(f.store.ai_task(&a.id).unwrap().unwrap().status, "queued");
+}
+
+#[test]
+fn scoped_ai_cancel_validates_whole_batch_before_changing_jobs() {
+    let mut f = Fixture::new();
+    let file = f.add("queued.txt", "text", b"a");
+    f.store.queue_ai(&[file.id.clone()]).unwrap();
+    assert!(f.store.cancel_ai_files(&[]).is_err());
+    assert!(f
+        .store
+        .cancel_ai_files(&[file.id.clone(), "missing-file-id".into()])
+        .is_err());
+    assert_eq!(f.store.ai_task(&file.id).unwrap().unwrap().status, "queued");
+    assert_eq!(
+        f.store
+            .cancel_ai_files(&[file.id.clone(), file.id.clone()])
+            .unwrap()["cancelled"],
+        1
+    );
+    assert_eq!(f.store.cancel_ai_files(&[file.id]).unwrap()["cancelled"], 0);
 }

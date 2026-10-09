@@ -148,6 +148,7 @@ impl Store {
             std::fs::remove_file(root.join("restore-state.toml"))
                 .map_err(|e| err("STORAGE_UNAVAILABLE", e))?;
         }
+        store.recover_transfer()?;
         Ok(store)
     }
     pub fn validate(&self) -> Result<()> {
@@ -180,6 +181,7 @@ impl Store {
                     count: 0,
                     version: r.get(2)?,
                     created_by: r.get(3)?,
+                    accepted: false,
                     source: r.get(4)?,
                     ai: serde_json::from_str(&r.get::<_, String>(5)?).ok(),
                 })
@@ -189,7 +191,7 @@ impl Store {
             .map_err(sql_err)
     }
     pub fn tags(&self) -> Result<Vec<Tag>> {
-        let mut st=self.conn.prepare("SELECT t.id,t.name,t.version,COUNT(f.id),t.created_by FROM tags t LEFT JOIN file_tags ft ON t.id=ft.tag_id LEFT JOIN files f ON f.id=ft.file_id AND f.removed_at IS NULL GROUP BY t.id ORDER BY t.last_used DESC,t.name_key").map_err(sql_err)?;
+        let mut st=self.conn.prepare("SELECT t.id,t.name,t.version,COUNT(f.id),t.created_by,EXISTS(SELECT 1 FROM file_tags accepted WHERE accepted.tag_id=t.id AND accepted.source='ai' AND json_extract(accepted.ai_meta,'$.confirmed')=1) FROM tags t LEFT JOIN file_tags ft ON t.id=ft.tag_id LEFT JOIN files f ON f.id=ft.file_id AND f.removed_at IS NULL GROUP BY t.id ORDER BY t.last_used DESC,t.name_key").map_err(sql_err)?;
         let rows = st
             .query_map([], |r| {
                 Ok(Tag {
@@ -198,12 +200,21 @@ impl Store {
                     version: r.get(2)?,
                     count: r.get(3)?,
                     created_by: r.get(4)?,
+                    accepted: r.get(5)?,
                     ..Default::default()
                 })
             })
             .map_err(sql_err)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(sql_err)
+    }
+    /// Suggestions stay attached to files until the user accepts them.
+    pub fn tag_pool(&self) -> Result<Vec<Tag>> {
+        Ok(self
+            .tags()?
+            .into_iter()
+            .filter(|tag| tag.created_by != "ai" || tag.accepted)
+            .collect())
     }
     pub fn bootstrap(&self) -> Result<Value> {
         let (all,inbox,starred,unavailable):(i64,i64,i64,i64)=self.conn.query_row("SELECT COUNT(*),COALESCE(SUM(NOT EXISTS(SELECT 1 FROM file_tags WHERE file_id=f.id)),0),COALESCE(SUM(favorite),0),COALESCE(SUM(status IN ('missing','offline','inaccessible')),0) FROM files f WHERE removed_at IS NULL",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(sql_err)?;
@@ -220,7 +231,7 @@ impl Store {
             settings.insert(k, serde_json::from_str(&v).unwrap_or(Value::String(v)));
         }
         Ok(
-            json!({"tags":self.tags()?,"counts":{"all":all,"inbox":inbox,"starred":starred,"unavailable":unavailable,"recent":all},"settings":settings,"undoLabel":self.undo.last().map(|u|u.label.clone()),"dataPath":self.root.to_string_lossy(),"version":env!("CARGO_PKG_VERSION"),"notice":self.recovery_notice}),
+            json!({"tags":self.tag_pool()?,"counts":{"all":all,"inbox":inbox,"starred":starred,"unavailable":unavailable,"recent":all},"settings":settings,"undoLabel":self.undo.last().map(|u|u.label.clone()),"dataPath":self.root.to_string_lossy(),"version":env!("CARGO_PKG_VERSION"),"notice":self.recovery_notice}),
         )
     }
     pub fn query(&self, q: &Query) -> Result<Value> {
@@ -330,7 +341,7 @@ impl Store {
     pub fn create_tag_with_source(&mut self, name: &str, source: &str) -> Result<Tag> {
         let name = validate_tag(name)?;
         let k = key(&name);
-        if let Some(t) = self
+        if let Some(mut t) = self
             .conn
             .query_row(
                 "SELECT id,name,version,created_by FROM tags WHERE name_key=?",
@@ -349,6 +360,16 @@ impl Store {
             .optional()
             .map_err(sql_err)?
         {
+            if source == "manual" && t.created_by == "ai" {
+                self.conn
+                    .execute(
+                        "UPDATE tags SET created_by='manual',version=version+1 WHERE id=?",
+                        [&t.id],
+                    )
+                    .map_err(sql_err)?;
+                t.created_by = "manual".into();
+                t.version += 1;
+            }
             return Ok(t);
         }
         let tid = id();
@@ -394,6 +415,9 @@ impl Store {
             "details",
             "galleryColumns",
             "sidebarCollapsed",
+            "sidebarWidth",
+            "floatingSize",
+            "floatingAlwaysOnTop",
             "folderAutoTagging",
         ]
         .contains(&name)
@@ -402,6 +426,26 @@ impl Store {
         }
         if name == "galleryColumns" && !v["value"].as_u64().is_some_and(|n| (2..=8).contains(&n)) {
             return Err(err("INVALID_INPUT", "瀑布流列数必须在 2 到 8 之间"));
+        }
+        if name == "sidebarWidth"
+            && !v["value"]
+                .as_u64()
+                .is_some_and(|n| (180..=360).contains(&n))
+        {
+            return Err(err("INVALID_INPUT", "菜单宽度必须在 180 到 360 像素之间"));
+        }
+        if name == "floatingSize"
+            && !(v["value"]["width"]
+                .as_u64()
+                .is_some_and(|n| (280..=900).contains(&n))
+                && v["value"]["height"]
+                    .as_u64()
+                    .is_some_and(|n| (320..=1000).contains(&n)))
+        {
+            return Err(err("INVALID_INPUT", "浮窗尺寸超出支持范围"));
+        }
+        if name == "floatingAlwaysOnTop" && !v["value"].is_boolean() {
+            return Err(err("INVALID_INPUT", "置顶状态必须为布尔值"));
         }
         if matches!(name, "sidebarCollapsed" | "folderAutoTagging") && !v["value"].is_boolean() {
             return Err(err("INVALID_INPUT", "菜单收拢状态必须为布尔值"));
@@ -604,6 +648,15 @@ impl Store {
                     .map_err(sql_err)?;
                 }
                 undo.label = "修改文件标签".into();
+                for (id, restore) in crate::auto_tags::cleanup_orphan_ai_tags(&tx)? {
+                    // Restore the tag before its associations when main-window undo is used.
+                    undo.steps.insert(0, restore);
+                    undo.guards.push(Guard {
+                        table: "tags".into(),
+                        id,
+                        version: -1,
+                    });
+                }
             }
             "files.favorite" | "files.remove" => {
                 let files = checked_files(&tx, v)?;

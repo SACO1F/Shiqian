@@ -32,7 +32,7 @@ pub fn start_worker(
                 store.root.clone(),
                 file,
                 token,
-                store.tags()?,
+                store.tag_pool()?,
                 epoch.load(Ordering::SeqCst),
                 read_key(&store.root),
             )))
@@ -52,6 +52,16 @@ pub fn start_worker(
             }
             if epoch.load(Ordering::SeqCst) != generation {
                 return Err(err("AI_CANCELLED", "AI 设置已变化"));
+            }
+            // A file-scoped cancellation must not invalidate other queued work.
+            // Check again after extraction, before sending this file's content.
+            let still_current = shared_store
+                .lock()
+                .map_err(|_| err("STORAGE_UNAVAILABLE", "资料库暂不可用"))?
+                .ai_task(&file.id)?
+                .is_some_and(|job| job.updated_at == token && job.status == "running");
+            if !still_current {
+                return Err(err("AI_CANCELLED", "识别请求已被更新或取消"));
             }
             let result = send(&config, &key?, &body)?;
             parse_response(&result, &pool, config.allow_new_tags)

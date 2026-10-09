@@ -1,11 +1,40 @@
 use crate::{
-    db::{sv, validate_tag, Guard, Step, Store, Undo},
+    db::{iv, sv, validate_tag, Guard, Step, Store, Undo},
     model::*,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 use unicode_segmentation::UnicodeSegmentation;
+
+pub(crate) fn cleanup_orphan_ai_tags(conn: &Connection) -> Result<Vec<(String, Step)>> {
+    let mut statement = conn.prepare("SELECT id,name,name_key,version,last_used FROM tags WHERE created_by='ai' AND NOT EXISTS(SELECT 1 FROM file_tags WHERE tag_id=tags.id)").map_err(sql_err)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })
+        .map_err(sql_err)?;
+    let rows = rows
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sql_err)?;
+    drop(statement);
+    let mut restores = vec![];
+    for (id, name, name_key, version, used) in rows {
+        conn.execute("DELETE FROM tags WHERE id=?", [&id])
+            .map_err(sql_err)?;
+        restores.push((id.clone(), Step {
+            sql: "INSERT INTO tags(id,name,name_key,version,last_used,created_by) VALUES(?,?,?,?,?,'ai')".into(),
+            args: vec![sv(id), sv(name), sv(name_key), iv(version), iv(used)],
+        }));
+    }
+    Ok(restores)
+}
 
 pub fn migrate(conn: &Connection) -> Result<()> {
     let version: i64 = conn
@@ -159,6 +188,38 @@ impl Store {
         }
         Ok(())
     }
+    pub fn cancel_ai_files(&self, ids: &[String]) -> Result<Value> {
+        if ids.is_empty() || ids.len() > 1000 {
+            return Err(err("INVALID_INPUT", "每次请选择 1～1000 个文件"));
+        }
+        for fid in ids {
+            self.file(fid)?;
+        }
+        self.conn
+            .execute_batch("SAVEPOINT ai_cancel_files")
+            .map_err(sql_err)?;
+        let result = (|| {
+            let mut cancelled = 0;
+            for fid in ids {
+                cancelled += self.conn.execute("UPDATE ai_jobs SET status='cancelled',error='已取消，可重新识别' WHERE file_id=? AND status IN ('queued','running')", [fid]).map_err(sql_err)?;
+            }
+            Ok(json!({ "cancelled": cancelled }))
+        })();
+        match result {
+            Ok(value) => {
+                self.conn
+                    .execute_batch("RELEASE ai_cancel_files")
+                    .map_err(sql_err)?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO ai_cancel_files; RELEASE ai_cancel_files");
+                Err(error)
+            }
+        }
+    }
     pub fn task_status(&self, fid: &str, token: i64, status: &str, error: &str) -> Result<()> {
         self.conn
             .execute(
@@ -214,10 +275,17 @@ impl Store {
             return Ok(json_ok());
         }
         let old = association_step(&self.conn, fid, tag_id)?.unwrap();
+        // Floating shortcuts are preferences. Add once without replacing the
+        // user's other pins; keep the association's provenance for reanalysis.
+        let mut pins = string_list(&self.floating_presets()?, "ids");
+        if tag.created_by != "folder" && !pins.iter().any(|id| id == tag_id) {
+            pins.push(tag_id.into());
+        }
         let tx = self.conn.transaction().map_err(sql_err)?;
         tx.execute("UPDATE file_tags SET ai_meta=json_set(ai_meta,'$.confirmed',json('true')) WHERE file_id=? AND tag_id=?",params![fid,tag_id]).map_err(sql_err)?;
         tx.execute("UPDATE files SET version=version+1 WHERE id=?", [fid])
             .map_err(sql_err)?;
+        tx.execute("INSERT INTO settings(key,value) VALUES('floatingTags',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!(pins).to_string()]).map_err(sql_err)?;
         tx.commit().map_err(sql_err)?;
         self.remember(Undo {
             label: "确认 AI 标注".into(),
@@ -283,7 +351,7 @@ impl Store {
             return Err(err("AI_CANCELLED", "识别请求已被更新或取消"));
         }
         // Validate every choice before making any changes; labels are data, never commands.
-        let pool = self.tags()?;
+        let pool = self.tag_pool()?;
         for (tid, name, reason) in choices {
             validate_tag(name)?;
             if reason.chars().count() > 500 {
@@ -326,6 +394,7 @@ impl Store {
                 .execute("UPDATE files SET version=version+1 WHERE id=?", [&file.id])
                 .map_err(sql_err)?;
             self.task_status(&file.id, token, "done", "")?;
+            cleanup_orphan_ai_tags(&self.conn)?;
             Ok(())
         })();
         match result {

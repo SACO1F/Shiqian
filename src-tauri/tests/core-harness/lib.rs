@@ -20,3 +20,9 @@ mod db;
 mod fsops;
 #[path = "../../src/model.rs"]
 mod model;
+
+#[path = "../../src/transfer.rs"]
+mod transfer;
+#[cfg(test)]
+#[path = "../../src/transfer_tests.rs"]
+mod transfer_tests;

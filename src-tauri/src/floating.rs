@@ -1,10 +1,20 @@
 use crate::{model::*, shell_target, AppState};
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
+use std::sync::{atomic::Ordering, mpsc};
 use tauri::{Emitter, Manager};
 
 pub fn open(app: &tauri::AppHandle, state: &AppState) -> Result<Value> {
     state.store()?.floating_presets()?;
+    let settings = state.store()?.bootstrap()?["settings"].clone();
+    let width = settings["floatingSize"]["width"]
+        .as_f64()
+        .unwrap_or(340.)
+        .clamp(280., 900.);
+    let height = settings["floatingSize"]["height"]
+        .as_f64()
+        .unwrap_or(460.)
+        .clamp(320., 1000.);
+    let topmost = settings["floatingAlwaysOnTop"].as_bool().unwrap_or(true);
     if let Some(w) = app.get_webview_window("floating") {
         w.show().map_err(|e| err("WINDOW_ERROR", e))?;
         w.set_focus().map_err(|e| err("WINDOW_ERROR", e))?;
@@ -15,25 +25,144 @@ pub fn open(app: &tauri::AppHandle, state: &AppState) -> Result<Value> {
             tauri::WebviewUrl::App("index.html?floating".into()),
         )
         .title("拾签 · 标签浮窗")
-        .inner_size(340., 460.)
-        .resizable(false)
+        .inner_size(width, height)
+        .min_inner_size(280., 320.)
+        .max_inner_size(900., 1000.)
+        .resizable(true)
         .decorations(false)
-        .always_on_top(true)
+        .transparent(true)
+        .effects(
+            tauri::window::EffectsBuilder::new()
+                .effect(tauri::window::Effect::Acrylic)
+                .build(),
+        )
+        .always_on_top(topmost)
+        .theme(match settings["theme"].as_str() {
+            Some("dark") => Some(tauri::Theme::Dark),
+            Some("light") => Some(tauri::Theme::Light),
+            _ => None,
+        })
         .skip_taskbar(true)
         .focused(true);
         if std::env::var_os("SHIQIAN_DATA_DIR").is_some() {
             builder = builder.data_directory(state.store()?.root.join("webview"));
         }
         let w = builder.build().map_err(|e| err("WINDOW_ERROR", e))?;
+        remember_size(&w, state);
         if let Ok(Some(m)) = w.current_monitor() {
             let area = m.work_area();
             let scale = m.scale_factor();
-            let x = area.position.x + area.size.width as i32 - (364. * scale) as i32;
+            let fitted_height = height.min((area.size.height as f64 / scale - 80.).max(320.));
+            let _ = w.set_size(tauri::LogicalSize::new(width, fitted_height));
+            let x = area.position.x + area.size.width as i32 - ((width + 24.) * scale) as i32;
             let y = area.position.y + (60. * scale) as i32;
             let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
         }
     }
     let _ = app.emit("library-changed", ());
+    Ok(json_ok())
+}
+
+fn remember_size(window: &tauri::WebviewWindow, state: &AppState) {
+    let (sender, receiver) = mpsc::channel();
+    let watched = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::Resized(size) = event {
+            if let Ok(scale) = watched.scale_factor() {
+                let logical = size.to_logical::<f64>(scale);
+                let _ = sender.send((logical.width.round() as u32, logical.height.round() as u32));
+            }
+        }
+    });
+    let state = state.clone();
+    // One worker debounces native resize events, avoiding a database write per frame.
+    std::thread::spawn(move || {
+        while let Ok(mut size) = receiver.recv() {
+            loop {
+                match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
+                    Ok(next) => size = next,
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            if size.1 >= 320 {
+                if let Ok(mut store) = state.store() {
+                    let _ = store.save_settings(
+                        &json!({"key":"floatingSize","value":{"width":size.0,"height":size.1}}),
+                    );
+                }
+            }
+        }
+    });
+}
+
+pub fn options(app: &tauri::AppHandle) -> Result<Value> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| err("WINDOW_ERROR", "浮窗未打开"))?;
+    let scale = window.scale_factor().map_err(|e| err("WINDOW_ERROR", e))?;
+    let size = window
+        .inner_size()
+        .map_err(|e| err("WINDOW_ERROR", e))?
+        .to_logical::<f64>(scale);
+    Ok(
+        json!({"width":size.width,"height":size.height,"collapsed":size.height<100.,"alwaysOnTop":window.is_always_on_top().map_err(|e| err("WINDOW_ERROR",e))?,"resizable":window.is_resizable().map_err(|e| err("WINDOW_ERROR",e))?}),
+    )
+}
+
+pub fn resize(app: &tauri::AppHandle, state: &AppState, collapsed: bool) -> Result<Value> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| err("WINDOW_ERROR", "浮窗未打开"))?;
+    let current = options(app)?;
+    if collapsed && current["height"].as_f64().unwrap_or_default() >= 320. {
+        state.store()?.save_settings(&json!({"key":"floatingSize","value":{"width":current["width"].as_f64().unwrap_or(340.).round() as u32,"height":current["height"].as_f64().unwrap_or(460.).round() as u32}}))?;
+    }
+    let settings = state.store()?.bootstrap()?["settings"].clone();
+    let width = settings["floatingSize"]["width"].as_f64().unwrap_or(340.);
+    let height = settings["floatingSize"]["height"].as_f64().unwrap_or(460.);
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(
+            280.,
+            if collapsed { 64. } else { 320. },
+        )))
+        .map_err(|e| err("WINDOW_ERROR", e))?;
+    window
+        .set_resizable(!collapsed)
+        .map_err(|e| err("WINDOW_ERROR", e))?;
+    window
+        .set_size(tauri::LogicalSize::new(
+            width,
+            if collapsed { 64. } else { height },
+        ))
+        .map_err(|e| err("WINDOW_ERROR", e))?;
+    Ok(json_ok())
+}
+
+pub fn topmost(app: &tauri::AppHandle, state: &AppState, value: bool) -> Result<Value> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or_else(|| err("WINDOW_ERROR", "浮窗未打开"))?;
+    window
+        .set_always_on_top(value)
+        .map_err(|e| err("WINDOW_ERROR", e))?;
+    state
+        .store()?
+        .save_settings(&json!({"key":"floatingAlwaysOnTop","value":value}))?;
+    Ok(json_ok())
+}
+
+pub fn sync_theme(app: &tauri::AppHandle, theme: &str) -> Result<Value> {
+    let theme = match theme {
+        "dark" => tauri::Theme::Dark,
+        "light" => tauri::Theme::Light,
+        _ => return Err(err("INVALID_INPUT", "无效的窗口主题")),
+    };
+    for window in app.webview_windows().values() {
+        window
+            .set_theme(Some(theme))
+            .map_err(|e| err("WINDOW_ERROR", e))?;
+    }
     Ok(json_ok())
 }
 pub fn main_show(app: &tauri::AppHandle) -> Result<Value> {

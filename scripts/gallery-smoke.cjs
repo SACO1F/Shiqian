@@ -1,3 +1,4 @@
+const { getSearch } = require("./search-control.cjs");
 // Real Tauri WebView, real IPC and isolated QA data only.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -198,7 +199,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     await assertLayout();
   }
   pass("Scrolling loads the next page while keeping the gallery virtualized");
-  const search = page.getByLabel("搜索文件", { exact: true });
+  const search = await getSearch(page);
   await search.fill("画幅-001");
   const first = page.getByRole("option", { name: "画幅-001.png", exact: true });
   await first.waitFor();

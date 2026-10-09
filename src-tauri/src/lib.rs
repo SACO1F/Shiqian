@@ -10,8 +10,12 @@ mod floating;
 mod fsops;
 mod model;
 mod shell_target;
+mod tag_export;
 #[cfg(test)]
 mod tests;
+mod transfer;
+#[cfg(test)]
+mod transfer_tests;
 
 use crate::{db::Store, model::*};
 use serde_json::{json, Value};
@@ -33,6 +37,7 @@ pub struct AppState {
     drag_active: Arc<AtomicBool>,
     drag_cancel: Arc<AtomicBool>,
     ai_generation: Arc<AtomicU64>,
+    transfer: Arc<transfer::Control>,
 }
 impl AppState {
     fn new(root: &Path) -> Result<Self> {
@@ -42,6 +47,7 @@ impl AppState {
             drag_active: Arc::new(AtomicBool::new(false)),
             drag_cancel: Arc::new(AtomicBool::new(false)),
             ai_generation: Arc::new(AtomicU64::new(0)),
+            transfer: Arc::new(transfer::Control::default()),
         })
     }
     fn store(&self) -> Result<std::sync::MutexGuard<'_, Store>> {
@@ -216,6 +222,9 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
         }
         "ai.cancel" => {
             let store = state.store()?;
+            if v.get("ids").is_some() {
+                return store.cancel_ai_files(&string_list(v, "ids"));
+            }
             state.ai_generation.fetch_add(1, Ordering::SeqCst);
             store.conn.execute("UPDATE ai_jobs SET status='cancelled',error='已取消，可重新识别' WHERE status IN ('queued','running')",[]).map_err(sql_err)?;
             Ok(json_ok())
@@ -226,20 +235,22 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
         "floating.close" => floating::close(app, state),
         "floating.presets" => state.store()?.floating_presets(),
         "floating.save" => state.store()?.save_floating_presets(&string_list(v, "ids")),
-        "floating.resize" => {
-            if let Some(w) = app.get_webview_window("floating") {
-                w.set_size(tauri::LogicalSize::new(
-                    340.,
-                    if v["collapsed"].as_bool().unwrap_or(false) {
-                        64.
-                    } else {
-                        460.
-                    },
-                ))
-                .map_err(|e| err("WINDOW_ERROR", e))?;
-            }
-            Ok(json_ok())
-        }
+        "floating.state" => floating::options(app),
+        "floating.resize" => floating::resize(
+            app,
+            state,
+            v["collapsed"]
+                .as_bool()
+                .ok_or_else(|| err("INVALID_INPUT", "缺少收起状态"))?,
+        ),
+        "floating.topmost" => floating::topmost(
+            app,
+            state,
+            v["value"]
+                .as_bool()
+                .ok_or_else(|| err("INVALID_INPUT", "缺少置顶状态"))?,
+        ),
+        "theme.sync" => floating::sync_theme(app, str_arg(v, "theme")?),
         "floating.drag" => floating::start_drag(app, state, str_arg(v, "tagId")?),
         "floating.cancel" => {
             state.drag_cancel.store(true, Ordering::Relaxed);
@@ -322,6 +333,41 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             open::that(state.store()?.root.clone()).map_err(|e| err("OPEN_FAILED", e))?;
             Ok(json_ok())
         }
+        "package.status" => Ok(state.transfer.status()),
+        "package.cancel" => {
+            state.transfer.cancel.store(true, Ordering::SeqCst);
+            Ok(json_ok())
+        }
+        "package.plan" => Ok(state.store()?.transfer_plan(v)?.info),
+        "package.inspect" => state
+            .transfer
+            .run(|| transfer::preview(Path::new(str_arg(v, "path")?), &state.transfer)),
+        "package.export" => state.transfer.run(|| {
+            let plan = state.store()?.transfer_plan(v)?;
+            transfer::export(
+                plan,
+                Path::new(str_arg(v, "path")?),
+                str_arg(v, "fingerprint")?,
+                &state.transfer,
+            )
+        }),
+        "package.import" => state.transfer.run(|| {
+            if state
+                .jobs
+                .lock()
+                .map_err(|_| err("INTERNAL_ERROR", "任务锁异常"))?
+                .values()
+                .any(|(j, _)| !j.done)
+            {
+                return Err(err("IMPORT_BUSY", "请先等待文件加入任务完成"));
+            }
+            state.store()?.import_package(
+                Path::new(str_arg(v, "path")?),
+                Path::new(str_arg(v, "destination")?),
+                str_arg(v, "fingerprint")?,
+                &state.transfer,
+            )
+        }),
         "backup.inspect" => {
             let root = state.store()?.root.clone();
             Ok(backup::inspect_backup(Path::new(str_arg(v, "path")?), &root)?.info)
@@ -333,6 +379,18 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             state.store()?.query(&q)
         }
         "file" => Ok(json!(state.store()?.file(str_arg(v, "id")?)?)),
+        "tags.export" => {
+            let plan = state.store()?.tag_export_plan(str_arg(v, "id")?)?;
+            tag_export::export(plan, Path::new(str_arg(v, "destination")?))
+        }
+        "export.reveal" => {
+            let path = Path::new(str_arg(v, "path")?);
+            if !path.is_dir() {
+                return Err(err("EXPORT_DESTINATION", "导出文件夹已不存在"));
+            }
+            open::that(path).map_err(|e| err("OPEN_FAILED", e))?;
+            Ok(json_ok())
+        }
         "tag.create" => Ok(json!(state.store()?.create_tag(str_arg(v, "name")?)?)),
         "note.save" => state.store()?.save_note(v),
         "settings.save" => state.store()?.save_settings(v),
@@ -383,12 +441,15 @@ async fn api(
                     | "undo"
                     | "settings.save"
                     | "floating.save"
+                    | "floating.topmost"
+                    | "floating.resize"
                     | "folders.apply"
                     | "ai.settings.save"
                     | "ai.enqueue"
                     | "ai.cancel"
                     | "ai.confirm"
                     | "backup.restore"
+                    | "package.import"
             )
         {
             let _ = app.emit("library-changed", ());

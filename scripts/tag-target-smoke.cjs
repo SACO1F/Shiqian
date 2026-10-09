@@ -1,3 +1,4 @@
+const { getSearch } = require("./search-control.cjs");
 const assert = require("node:assert/strict"),
   fs = require("node:fs"),
   path = require("node:path");
@@ -32,7 +33,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
   const file = (await api("query", { text: "品牌视觉参考", limit: 100 }))
     .files[0];
   const checks = [];
-  await p.getByLabel("搜索文件", { exact: true }).fill("品牌视觉参考");
+  await (await getSearch(p)).fill("品牌视觉参考");
   await p.getByRole("option", { name: file.name, exact: true }).waitFor();
   for (const view of ["瀑布流视图", "列表视图"]) {
     await p.getByLabel(view, { exact: true }).click();
@@ -74,7 +75,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
   assert.equal((await api("file", { id: file.id })).tags.length, before);
   checks.push("Dropping on workspace chrome rejects annotation");
   await p.getByLabel("瀑布流视图", { exact: true }).click();
-  await p.getByLabel("搜索文件", { exact: true }).fill("");
+  await (await getSearch(p)).fill("");
   fs.writeFileSync(
     path.join(root, "qa/tag-target-results.json"),
     JSON.stringify({ checks }, null, 2),

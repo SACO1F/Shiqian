@@ -23,6 +23,7 @@ public/pdf-assets/
 *.db
 *.db-*
 *.sqtagbackup
+*.sqtagpack
 *.pem
 *.key
 

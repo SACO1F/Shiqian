@@ -5,6 +5,7 @@ export interface Tag {
   count: number;
   version: number;
   createdBy: "manual" | "folder" | "ai";
+  accepted?: boolean;
   source: "manual" | "folder" | "ai" | "";
   ai?: { model: string; reason: string; updatedAt: number; confirmed: boolean };
 }
@@ -67,6 +68,9 @@ export interface Bootstrap {
     details?: boolean;
     galleryColumns?: number;
     sidebarCollapsed?: boolean;
+    sidebarWidth?: number;
+    floatingSize?: { width: number; height: number };
+    floatingAlwaysOnTop?: boolean;
     folderAutoTagging?: boolean;
     ai?: AiConfig;
   };

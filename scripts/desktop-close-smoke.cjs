@@ -1,3 +1,4 @@
+const { getSearch } = require("./search-control.cjs");
 const fs = require("node:fs");
 const path = require("node:path");
 const assert = require("node:assert/strict");
@@ -19,7 +20,7 @@ const { DatabaseSync } = require("node:sqlite");
   assert.ok(
     path.resolve(boot.dataPath).startsWith(path.join(root, "qa") + path.sep),
   );
-  await page.getByLabel("搜索文件", { exact: true }).fill("品牌视觉参考");
+  await (await getSearch(page)).fill("品牌视觉参考");
   const details = page.getByLabel("切换详情面板", { exact: true });
   if ((await details.getAttribute("aria-pressed")) === "false")
     await details.click();

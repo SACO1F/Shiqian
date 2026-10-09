@@ -44,9 +44,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let p = await invoke(palette, "floating.presets");
   assert.equal(p.ids.length, 4);
   pass("Separate floating window opens with four built-in presets");
-  await palette.getByLabel("管理预设标签").click();
-  await palette.getByLabel("新建预设标签").fill("浮窗测试预设");
-  await palette.getByLabel("创建并固定标签").click();
+  await palette.getByRole("button", { name: "添加标签", exact: true }).click();
+  await palette.getByLabel("标签名称", { exact: true }).fill("浮窗测试预设");
+  await palette
+    .getByRole("dialog")
+    .getByRole("button", { name: "添加", exact: true })
+    .click();
   p = await poll(
     () => invoke(palette, "floating.presets"),
     (p) => p.tags.some((t) => t.name === "浮窗测试预设"),
@@ -56,7 +59,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     () => invoke(palette, "floating.presets"),
     (p) => p.ids.includes(tag.id),
   );
-  await palette.getByLabel("返回标签面板").click();
   await palette
     .getByRole("button", { name: "标签：浮窗测试预设", exact: true })
     .waitFor();
@@ -87,7 +89,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     { paths: [fixture], position: pos },
   );
   await palette
-    .getByRole("status")
+    .getByRole("log")
     .filter({ hasText: "浮窗自动加入.png" })
     .waitFor();
   const result = await invoke(main, "query", {
@@ -110,7 +112,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   pass(
     "Repeated annotation does not duplicate labels or increment file version",
   );
-  await palette.getByLabel("撤销上一步标注操作").click();
+  assert.equal(await palette.getByLabel("撤销上一步标注操作").count(), 0);
+  await main.getByLabel("撤销上一步", { exact: true }).click();
   await poll(
     () => invoke(main, "file", { id: file.id }),
     (f) => !f.tags.some((t) => t.id === tag.id),
@@ -118,9 +121,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   assert.ok(fs.existsSync(fixture));
   pass("Undo removes new association and preserves original file");
   await invoke(main, "annotation.apply", { tagId: tag.id, ids: [file.id] });
-  await palette.getByLabel("管理预设标签").click();
+  await palette.getByLabel("管理标签浮窗测试预设", { exact: true }).click();
   await palette
-    .getByRole("button", { name: "浮窗测试预设", exact: true })
+    .getByRole("menuitem", { name: "从浮窗移除", exact: true })
     .click();
   await poll(
     () => invoke(palette, "floating.presets"),
@@ -132,10 +135,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     ),
   );
   pass("Unpinning leaves existing file annotations intact");
+  await palette.getByRole("button", { name: "添加标签", exact: true }).click();
   await palette
+    .getByRole("dialog")
     .getByRole("button", { name: "浮窗测试预设", exact: true })
     .click();
-  await palette.getByLabel("返回标签面板").click();
   await palette.getByLabel("收起标签浮窗").click();
   await palette.waitForFunction(() => innerHeight === 64);
   await palette.getByLabel("展开标签浮窗").click();

@@ -1,3 +1,4 @@
+const { getSearch } = require("./search-control.cjs");
 const fs = require("node:fs"),
   path = require("node:path"),
   assert = require("node:assert/strict");
@@ -70,7 +71,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await page.keyboard.press("Space");
   await page.locator(".quick-preview").waitFor({ state: "hidden" });
   pass("Space opens and closes quick preview in the file context");
-  const input = page.getByLabel("搜索文件", { exact: true });
+  const input = await getSearch(page);
   await input.dispatchEvent("compositionstart");
   await input.fill("unfinished-ime-token");
   await sleep(400);

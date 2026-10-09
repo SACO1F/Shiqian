@@ -677,6 +677,84 @@ fn gallery_preferences_reject_invalid_values_without_overwriting_saved_choice() 
         4
     );
 }
+
+#[test]
+fn sidebar_width_is_validated_persisted_and_restored_from_backup() {
+    let mut f = Fixture::new();
+    f.store
+        .save_settings(&json!({"key":"sidebarWidth","value":288}))
+        .unwrap();
+    for invalid in [
+        json!(179),
+        json!(361),
+        json!(215.5),
+        json!("216"),
+        Value::Null,
+    ] {
+        assert!(f
+            .store
+            .save_settings(&json!({"key":"sidebarWidth","value":invalid}))
+            .is_err());
+    }
+    assert_eq!(
+        f.store.bootstrap().unwrap()["settings"]["sidebarWidth"],
+        288
+    );
+    let backup = f.files.join("sidebar-width.sqtagbackup");
+    f.store.export_backup(&backup).unwrap();
+    f.store
+        .save_settings(&json!({"key":"sidebarWidth","value":180}))
+        .unwrap();
+    f.store.restore_backup(&backup).unwrap();
+    assert_eq!(
+        f.store.bootstrap().unwrap()["settings"]["sidebarWidth"],
+        288
+    );
+    let root = f.store.root.clone();
+    drop(f.store);
+    assert_eq!(
+        Store::open(&root).unwrap().bootstrap().unwrap()["settings"]["sidebarWidth"],
+        288
+    );
+}
+
+#[test]
+fn floating_window_preferences_validate_dimensions_and_preserve_pinning_choice() {
+    let mut f = Fixture::new();
+    let size = json!({"width":496,"height":572});
+    f.store
+        .save_settings(&json!({"key":"floatingSize","value":size}))
+        .unwrap();
+    f.store
+        .save_settings(&json!({"key":"floatingAlwaysOnTop","value":false}))
+        .unwrap();
+    for invalid in [
+        json!({"width":279,"height":460}),
+        json!({"width":901,"height":460}),
+        json!({"width":340,"height":64}),
+        json!({"width":340,"height":1001}),
+        json!({"width":340.5,"height":460}),
+        Value::Null,
+    ] {
+        assert!(f
+            .store
+            .save_settings(&json!({"key":"floatingSize","value":invalid}))
+            .is_err());
+    }
+    assert!(f
+        .store
+        .save_settings(&json!({"key":"floatingAlwaysOnTop","value":"false"}))
+        .is_err());
+    assert_eq!(
+        f.store.bootstrap().unwrap()["settings"]["floatingSize"],
+        size
+    );
+    let root = f.store.root.clone();
+    drop(f.store);
+    let boot = Store::open(&root).unwrap().bootstrap().unwrap();
+    assert_eq!(boot["settings"]["floatingSize"], size);
+    assert_eq!(boot["settings"]["floatingAlwaysOnTop"], false);
+}
 #[test]
 fn future_schema_is_rejected() {
     let f = Fixture::new();
@@ -751,4 +829,91 @@ fn representative_ten_thousand_file_search_benchmark() {
     times.sort_by(f64::total_cmp);
     println!("BENCH: 10,000 files, 40 tags, 30,000 links, varied Chinese notes; 120 queries; p50={:.2}ms p95={:.2}ms max={:.2}ms seed+query={:.2}s",times[60],times[114],times[119],start.elapsed().as_secs_f64());
     assert!(times[114] < 300.0, "search p95 exceeded 300ms");
+}
+
+#[test]
+fn tag_export_copies_all_matches_without_overwriting_originals_or_names() {
+    let mut f = Fixture::new();
+    let tag = f.store.create_tag("导出素材").unwrap();
+    let out = f.files.join("exports");
+    fs::create_dir(&out).unwrap();
+    fs::create_dir(out.join("导出素材")).unwrap();
+    fs::write(out.join("导出素材/保留.txt"), b"keep").unwrap();
+    let mut ids = vec![];
+    for i in 0..105 {
+        fs::create_dir(f.files.join(format!("folder-{i}"))).unwrap();
+        ids.push(
+            f.add(
+                &format!("folder-{i}/同名.txt"),
+                format!("content-{i}").as_bytes(),
+            )
+            .id,
+        );
+    }
+    f.tag(
+        &ids.iter().map(String::as_str).collect::<Vec<_>>(),
+        &[&tag.id],
+    );
+    let result =
+        crate::tag_export::export(f.store.tag_export_plan(&tag.id).unwrap(), &out).unwrap();
+    assert_eq!(result["copied"], 105);
+    assert_eq!(result["failed"], 0);
+    let target = Path::new(result["path"].as_str().unwrap());
+    assert_eq!(target.file_name().unwrap(), "导出素材 (2)");
+    assert_eq!(fs::read_dir(target).unwrap().count(), 106);
+    let content = fs::read_to_string(target.join("_拾签导出清单.txt")).unwrap();
+    assert!(content.contains("已复制：105"));
+    assert_eq!(fs::read(out.join("导出素材/保留.txt")).unwrap(), b"keep");
+    for i in 0..105 {
+        assert_eq!(
+            fs::read(f.files.join(format!("folder-{i}/同名.txt"))).unwrap(),
+            format!("content-{i}").as_bytes()
+        );
+    }
+}
+#[test]
+fn tag_export_reports_missing_files_and_excludes_removed_records() {
+    let mut f = Fixture::new();
+    let tag = f.store.create_tag("导出测试").unwrap();
+    let a = f.add("正常.txt", b"a");
+    let b = f.add("缺失.txt", b"b");
+    let c = f.add("移除.txt", b"c");
+    f.tag(&[&a.id, &b.id, &c.id], &[&tag.id]);
+    f.patch("files.remove", &[&c.id], json!({})).unwrap();
+    fs::remove_file(&b.path).unwrap();
+    let result =
+        crate::tag_export::export(f.store.tag_export_plan(&tag.id).unwrap(), &f.files).unwrap();
+    assert_eq!(result["total"], 2);
+    assert_eq!(result["copied"], 1);
+    assert_eq!(result["failed"], 1);
+    assert_eq!(result["failures"][0]["path"], b.path);
+    assert!(!Path::new(result["path"].as_str().unwrap())
+        .join("移除.txt")
+        .exists());
+}
+#[test]
+fn tag_export_rejects_empty_and_app_data_and_sanitizes_folder_names() {
+    let mut f = Fixture::new();
+    let tag = f.store.create_tag("CON").unwrap();
+    assert!(f
+        .store
+        .tag_export_plan(&tag.id)
+        .err()
+        .unwrap()
+        .contains("EXPORT_EMPTY"));
+    let a = f.add("_拾签导出清单.txt", b"original manifest-name file");
+    f.tag(&[&a.id], &[&tag.id]);
+    assert!(
+        crate::tag_export::export(f.store.tag_export_plan(&tag.id).unwrap(), &f.store.root)
+            .is_err()
+    );
+    let result =
+        crate::tag_export::export(f.store.tag_export_plan(&tag.id).unwrap(), &f.files).unwrap();
+    let target = Path::new(result["path"].as_str().unwrap());
+    assert_eq!(target.file_name().unwrap(), "_CON");
+    assert_eq!(
+        fs::read(target.join("_拾签导出清单 (2).txt")).unwrap(),
+        b"original manifest-name file"
+    );
+    assert_eq!(fs::read(&a.path).unwrap(), b"original manifest-name file");
 }

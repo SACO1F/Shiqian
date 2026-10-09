@@ -1,0 +1,192 @@
+/* Local, interruptible feedback inspired by the React Bits motion assessment. */
+.modal-backdrop {
+  animation: surface-fade 180ms ease both;
+}
+.modal {
+  animation: surface-enter 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.modal-backdrop.is-closing {
+  animation: surface-fade-out 140ms ease both;
+}
+.modal-backdrop.is-closing .modal {
+  animation: surface-exit 140ms ease both;
+}
+.float-tag-menu,
+.tag-options {
+  animation: surface-enter 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  transform-origin: top center;
+}
+.float-tag-menu.is-closing {
+  animation: surface-exit 140ms ease both;
+}
+.float-tag-menu {
+  isolation: isolate;
+}
+.float-tag-menu > strong,
+.float-tag-menu > button {
+  position: relative;
+  z-index: 1;
+}
+.float-tag-menu > button:hover:not(:disabled),
+.float-tag-menu > button:focus-visible {
+  background: transparent;
+}
+.menu-glide {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 160ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 100ms ease;
+}
+.app-shell .selection-check {
+  opacity: 0;
+  transform: scale(0.84);
+  pointer-events: none;
+  transition:
+    opacity 140ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.app-shell .selection-check.is-checked {
+  opacity: 1;
+  transform: scale(1);
+}
+.selection-check path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  transition: stroke-dashoffset 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.selection-check.is-checked path {
+  stroke-dashoffset: 0;
+}
+.floating-history {
+  position: relative;
+  overflow: hidden;
+}
+.history-ghost {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  pointer-events: none;
+}
+.history-ghost > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-lattice {
+  display: grid;
+  grid-template-columns: repeat(3, 3px);
+  gap: 2px;
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.task-lattice i {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.3;
+  animation: lattice-wave 900ms ease-in-out infinite;
+}
+.task-state-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  animation: surface-fade 160ms ease both;
+}
+.task-glyph {
+  flex-shrink: 0;
+}
+.ai-task-status {
+  gap: 8px;
+  line-height: 1.65;
+}
+.ai-task-status[data-task-state="done"],
+.ai-task-status[data-task-state="review"] {
+  color: var(--accent);
+}
+.ai-task-status[data-task-state="error"] {
+  color: var(--danger);
+}
+.ai-task-status .task-cancel {
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ai-task-status small {
+  color: var(--muted);
+}
+@keyframes surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+@keyframes surface-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+@keyframes surface-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes surface-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@keyframes lattice-wave {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  45% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .modal,
+  .float-tag-menu,
+  .tag-options,
+  .task-state-line,
+  .task-lattice i {
+    animation: none;
+  }
+  .app-shell .selection-check,
+  .selection-check path,
+  .menu-glide {
+    transition: none;
+  }
+  .task-lattice i {
+    opacity: 0.65;
+  }
+}

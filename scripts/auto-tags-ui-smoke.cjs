@@ -28,10 +28,18 @@ const root = path.resolve(__dirname, "..");
       2,
     );
     await page.getByLabel("确认AI标签参考素材", { exact: true }).click();
-    await page
-      .locator(".inspector")
-      .getByLabel("AI 已确认", { exact: true })
-      .waitFor();
+    await page.waitForFunction(
+      () =>
+        document.querySelectorAll('.inspector [aria-label="AI 待确认"]')
+          .length === 1,
+    );
+    assert.equal(
+      await page
+        .locator(".inspector")
+        .getByLabel("AI 已确认", { exact: true })
+        .count(),
+      0,
+    );
     assert.ok(
       await page
         .locator(".inspector")
