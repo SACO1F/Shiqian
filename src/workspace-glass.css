@@ -65,6 +65,11 @@
   touch-action: none;
   outline: none;
 }
+.app-shell .sidebar-resize-handle:focus-visible {
+  /* Override the later global [tabindex] focus ring; the rail is the cue. */
+  outline: none;
+  outline-offset: 0;
+}
 .sidebar-resize-handle::after {
   content: "";
   position: absolute;

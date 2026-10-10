@@ -7,7 +7,17 @@ interface Settings {
   hasKey: boolean;
   summary: Record<string, number>;
 }
-export function AutoTagSettings({ folderEnabled }: { folderEnabled: boolean }) {
+export function AutoTagSettings({
+  folderEnabled,
+  onboarding = false,
+  onSaved,
+  onBusyChange,
+}: {
+  folderEnabled: boolean;
+  onboarding?: boolean;
+  onSaved?: () => void;
+  onBusyChange?: (busy: boolean) => void;
+}) {
   const [folder, setFolder] = useState(folderEnabled);
   const [settings, setSettings] = useState<Settings>();
   const [config, setConfig] = useState<AiConfig>();
@@ -47,6 +57,7 @@ export function AutoTagSettings({ folderEnabled }: { folderEnabled: boolean }) {
   }, []);
   const run = async (fn: () => Promise<string>) => {
     setBusy(true);
+    onBusyChange?.(true);
     setNotice("");
     setError(false);
     try {
@@ -56,6 +67,7 @@ export function AutoTagSettings({ folderEnabled }: { folderEnabled: boolean }) {
       setNotice(message(e));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   };
   const dirty =
@@ -65,46 +77,51 @@ export function AutoTagSettings({ folderEnabled }: { folderEnabled: boolean }) {
       clearKey);
   return (
     <>
-      <section className="auto-tag-settings">
-        <h3>
-          <Folder size={16} />
-          文件夹自动标签
-        </h3>
-        <label className="auto-tag-toggle">
-          <input
-            type="checkbox"
-            checked={folder}
-            disabled={busy}
-            onChange={(e) => {
-              const value = e.target.checked;
+      {!onboarding && (
+        <section className="auto-tag-settings">
+          <h3>
+            <Folder size={16} />
+            文件夹自动标签
+          </h3>
+          <label className="auto-tag-toggle">
+            <input
+              type="checkbox"
+              checked={folder}
+              disabled={busy}
+              onChange={(e) => {
+                const value = e.target.checked;
+                void run(async () => {
+                  await api("settings.save", {
+                    key: "folderAutoTagging",
+                    value,
+                  });
+                  setFolder(value);
+                  return value
+                    ? "新导入文件会获得所在文件夹的标签"
+                    : "已关闭；已有标签会保留";
+                });
+              }}
+            />
+            导入时使用所在文件夹名称作为标签
+          </label>
+          <p className="subtle">
+            例如「素材 / 海报 /
+            封面.png」添加「海报」。同名标签会复用；递归导入时采用每个文件的直接父文件夹。
+          </p>
+          <button
+            className="button quiet"
+            disabled={busy || !folder}
+            onClick={() =>
               void run(async () => {
-                await api("settings.save", { key: "folderAutoTagging", value });
-                setFolder(value);
-                return value
-                  ? "新导入文件会获得所在文件夹的标签"
-                  : "已关闭；已有标签会保留";
-              });
-            }}
-          />
-          导入时使用所在文件夹名称作为标签
-        </label>
-        <p className="subtle">
-          例如「素材 / 海报 /
-          封面.png」添加「海报」。同名标签会复用；递归导入时采用每个文件的直接父文件夹。
-        </p>
-        <button
-          className="button quiet"
-          disabled={busy || !folder}
-          onClick={() =>
-            void run(async () => {
-              const result = await api<{ changed: number }>("folders.apply");
-              return `已为 ${result.changed} 个文件补齐文件夹标签`;
-            })
-          }
-        >
-          为已有文件补齐标签
-        </button>
-      </section>
+                const result = await api<{ changed: number }>("folders.apply");
+                return `已为 ${result.changed} 个文件补齐文件夹标签`;
+              })
+            }
+          >
+            为已有文件补齐标签
+          </button>
+        </section>
+      )}
       <section className="auto-tag-settings">
         <h3>
           <Sparkles size={16} />
@@ -211,12 +228,13 @@ export function AutoTagSettings({ folderEnabled }: { folderEnabled: boolean }) {
                     setConfig(result.config);
                     setKey("");
                     setClearKey(false);
+                    onSaved?.();
                     return "AI 设置已保存，新导入文件按此设置处理；已有文件可在详情中重新识别";
                   })
                 }
               >
-                {busy && <LoaderCircle size={14} className="spin" />}保存 AI
-                设置
+                {busy && <LoaderCircle size={14} className="spin" />}
+                {onboarding ? "保存并继续" : "保存 AI 设置"}
               </button>
               <button
                 className="button"

@@ -74,14 +74,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       value: true,
     });
     await p.getByRole("button", { name: "偏好设置", exact: true }).click();
-    await p.getByRole("button", { name: "导出资料包", exact: true }).click();
+    await p.getByRole("dialog").getByRole("button", { name: "导出资料包", exact: true }).click();
     await p
       .getByLabel("资料包路径", { exact: true })
       .fill(path.join(qa, "交接资料.sqtagpack"));
     await p.getByText("2 个文件", { exact: true }).waitFor();
     await p.waitForTimeout(300);
     await p.screenshot({ path: path.join(qa, "export-light.png") });
-    await p.getByRole("button", { name: "导出资料包", exact: true }).click();
+    await p.getByRole("dialog").getByRole("button", { name: "导出资料包", exact: true }).click();
     await p.getByText("已导出 2 个文件", { exact: true }).waitFor();
     assert.ok(fs.existsSync(path.join(qa, "交接资料.sqtagpack")));
     const expected = [];

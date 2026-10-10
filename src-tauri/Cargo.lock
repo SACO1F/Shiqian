@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "shiqian"
-version = "0.3.0-beta.9"
+version = "0.3.0-beta.12"
 dependencies = [
  "base64 0.22.1",
  "encoding_rs",

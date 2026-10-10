@@ -9,10 +9,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   p.setDefaultTimeout(12000);
   const errors=[]; p.on('pageerror',e=>errors.push(String(e)));
   const api=(action,payload={})=>p.evaluate(({action,payload})=>window.__TAURI_INTERNALS__.invoke('api',{action,payload}),{action,payload});
-  const root=path.resolve(__dirname,'../qa/beta9-ui');
+  const root=path.resolve(__dirname,'../qa/'+(process.env.BETA_QA_DIR || 'beta9-ui'));
   const boot=await api('bootstrap');
   assert.equal(path.resolve(boot.dataPath),path.join(root,'library'));
-  assert.equal(boot.version,'0.3.0-beta.9');
+  assert.equal(boot.version,(process.env.BETA_VERSION || '0.3.0-beta.9'));
   if (!(await api('query',{limit:100})).total) {
    await api('import',{paths:fs.readdirSync(root).filter(n=>n.endsWith('.png')).map(n=>path.join(root,n))});
    for(let i=0;i<200;i++){if((await api('import.status'))?.done)break;await p.waitForTimeout(100);}

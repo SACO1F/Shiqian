@@ -59,7 +59,7 @@ export function SidebarResizeHandle({
       onPointerDown={(e) => {
         if (e.button !== 0 || !e.isPrimary) return;
         e.preventDefault();
-        e.currentTarget.focus();
+        e.currentTarget.focus({ preventScroll: true });
         e.currentTarget.setPointerCapture(e.pointerId);
         drag.current = {
           pointer: e.pointerId,

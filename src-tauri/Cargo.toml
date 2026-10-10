@@ -1,6 +1,6 @@
 [package]
 name = "shiqian"
-version = "0.3.0-beta.9"
+version = "0.3.0-beta.12"
 description = "Local file tagging workspace"
 edition = "2021"
 rust-version = "1.88"

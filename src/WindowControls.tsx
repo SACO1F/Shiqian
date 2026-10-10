@@ -1,7 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { Minus, Square, Copy, X } from "lucide-react";
 import { message } from "./api";
+
+export function StartupWindow({ children }: { children: ReactNode }) {
+  const [error, setError] = useState("");
+  return (
+    <div className="startup-window">
+      <header className="topbar startup-topbar">
+        <div
+          className="window-drag-region"
+          aria-label="拖动窗口"
+          onMouseDown={(event) => {
+            if (event.button === 0 && event.detail === 1)
+              void getCurrentWebviewWindow()
+                .startDragging()
+                .catch((e) => setError(message(e)));
+          }}
+          onDoubleClick={() =>
+            void getCurrentWebviewWindow()
+              .toggleMaximize()
+              .catch((e) => setError(message(e)))
+          }
+        />
+        <WindowControls onError={setError} />
+      </header>
+      {children}
+      {error && (
+        <div className="toast error" role="alert">
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function WindowControls({
   onError,

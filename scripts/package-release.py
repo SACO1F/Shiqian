@@ -54,6 +54,8 @@ def main():
         raise ValueError("Invalid release version")
     validate_versions(root, version)
     mappings = {"0.3.0-beta.1": "beta1", "0.3.0-beta.2": "beta2", "0.3.0-beta.3": "beta3", "0.3.0-beta.4": "beta4", "0.3.0-beta.5": "beta5", "0.3.0-beta.6": "beta6", "0.3.0-beta.7": "beta7", "0.3.0-beta.8": "beta8", "0.3.0-beta.9": "beta9"}
+    mappings["0.3.0-beta.10"] = "beta10"
+    mappings["0.3.0-beta.12"] = "beta12"
     if version not in mappings:
         raise ValueError("Add matching guide/validation mappings for this release")
     suffix = mappings[version]
@@ -85,6 +87,8 @@ def main():
     (release / (prefix + "-guide.zh-CN.md")).write_text(guide, encoding="utf-8")
     validation = (root / ("docs/validation-v0.3-" + suffix + ".md")).read_text(encoding="utf-8")
     validation = validation.replace("(beta-v0.3-" + suffix + ".md)", "(" + prefix + "-guide.zh-CN.md)")
+    if suffix == "beta10":
+        validation = validation.replace("[RC 实机清单](beta10-rc-checklist.md)", "RC 实机清单（源码快照内 `docs/beta10-rc-checklist.md`）")
     validation = re.sub(r"\[([^]]+)\]\((evidence/[^)]+)\)", r"\1（源码快照内 `docs/\2`）", validation)
     (release / (prefix + "-validation.zh-CN.md")).write_text(validation, encoding="utf-8")
     files = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root).decode("utf-8").split("\0")

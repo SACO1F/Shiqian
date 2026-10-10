@@ -1131,6 +1131,7 @@ export function TagManager({
 }
 
 export function SettingsPanel({
+  onHelp,
   boot,
   theme,
   setTheme,
@@ -1146,6 +1147,7 @@ export function SettingsPanel({
   busy,
 }: {
   boot: Bootstrap;
+  onHelp: () => void;
   theme: string;
   setTheme: (s: string) => void;
   density: string;
@@ -1161,6 +1163,17 @@ export function SettingsPanel({
 }) {
   return (
     <div className="modal-content settings-content">
+      <section>
+        <div className="setting-row">
+          <div>
+            <strong>使用说明</strong>
+            <p>查看文件导入、标签和资料交接的基本操作</p>
+          </div>
+          <button className="button" onClick={onHelp}>
+            查看使用说明
+          </button>
+        </div>
+      </section>
       <section>
         <h3>外观</h3>
         <div className="setting-row">

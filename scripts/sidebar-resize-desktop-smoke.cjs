@@ -35,6 +35,10 @@ const root = path.resolve(__dirname, "..");
       await api("settings.save", { key, value });
     await page.setViewportSize({ width: 1360, height: 900 });
     await page.reload();
+    const intro = page.getByRole("dialog", { name: "启用 AI 自动标注？", exact: true });
+    if (await intro.count()) await intro.getByRole("button", { name: "暂不设置", exact: true }).click();
+    const guide = page.getByRole("dialog", { name: "快速上手拾签", exact: true });
+    if (await guide.count()) await guide.getByRole("button", { name: "开始使用", exact: true }).click();
     const handle = page.getByRole("separator", { name: "调整左侧菜单宽度" });
     await handle.waitFor();
     const width = () =>
@@ -67,7 +71,7 @@ const root = path.resolve(__dirname, "..");
       page.waitForFunction(
         (value) =>
           Math.abs(
-            document.querySelector(".sidebar").getBoundingClientRect().width -
+            (document.querySelector(".sidebar")?.getBoundingClientRect().width ?? 0) -
               value,
           ) < 1,
         value,
@@ -126,6 +130,32 @@ const root = path.resolve(__dirname, "..");
       "PASS drag-to-expand, maximum width and Escape restores uncommitted drag",
     );
     await handle.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await handle.focus();
+    const originalRing = await handle.evaluate(el => {
+      for (const sheet of document.styleSheets) {
+        for (let i = 0; i < sheet.cssRules.length; i++) {
+          const rule = sheet.cssRules[i];
+          if (rule.selectorText !== ".app-shell .sidebar-resize-handle:focus-visible") continue;
+          const text = rule.cssText;
+          sheet.deleteRule(i);
+          const original = getComputedStyle(el).outlineWidth;
+          sheet.insertRule(text, i);
+          return original;
+        }
+      }
+      throw Error("Missing separator focus override");
+    });
+    assert.equal(originalRing, "2px");
+    console.log("PASS original CSS cascade reproduces the 2px rectangular focus ring");
+    const focusStyle = await handle.evaluate(el => ({
+      outline: getComputedStyle(el).outlineStyle,
+      rail: getComputedStyle(el, "::after").backgroundColor,
+    }));
+    assert.equal(focusStyle.outline, "none");
+    assert.notEqual(focusStyle.rail, "rgba(0, 0, 0, 0)");
+    console.log("PASS keyboard-visible focus uses the resize rail, without rectangular green outline");
     await page.keyboard.press("Home");
     await settled(68);
     await page.keyboard.press("ArrowRight");

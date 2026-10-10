@@ -10,8 +10,8 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   const invoke=(cmd,args={})=>p.evaluate(({cmd,args})=>window.__TAURI_INTERNALS__.invoke(cmd,args),{cmd,args});
   const api=(action,payload={})=>invoke('api',{action,payload});
   const boot=await api('bootstrap');
-  assert.equal(boot.version,'0.3.0-beta.9');
-  assert.equal(path.resolve(boot.dataPath),path.resolve(__dirname,'../qa/beta9-ui/library'));
+  assert.equal(boot.version,(process.env.BETA_VERSION || '0.3.0-beta.9'));
+  assert.equal(path.resolve(boot.dataPath),path.resolve(__dirname,'../qa/'+(process.env.BETA_QA_DIR || 'beta9-ui')+'/library'));
   const property=name=>invoke('plugin:window|'+name,{label:'main'});
   const wait=async(read,expected)=>{for(let i=0;i<80;i++){if(await read()===expected)return;await p.waitForTimeout(50);}throw Error('Native state did not settle');};
   assert.equal(await property('is_decorated'),false);
@@ -49,7 +49,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
   for(const theme of ['light','dark']){
     await api('settings.save',{key:'theme',value:theme});await p.reload();
     await p.getByRole('button',{name:'关闭窗口',exact:true}).waitFor();
-    await p.screenshot({path:path.resolve(__dirname,'../qa/beta9-ui/titlebar-'+theme+'.png')});
+    await p.screenshot({path:path.resolve(__dirname,'../qa/'+(process.env.BETA_QA_DIR || 'beta9-ui')+'/titlebar-'+theme+'.png')});
   }
   assert.deepEqual(errors,[]);
   console.log('PASS close button follows existing hide-with-palette path; palette reopens main; light/dark custom titlebar and no page errors');

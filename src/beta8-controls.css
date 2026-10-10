@@ -61,7 +61,8 @@
   display: flex;
   align-self: stretch;
 }
-.app-shell .window-controls button {
+.app-shell .window-controls button,
+.startup-window .window-controls button {
   display: inline-flex;
   width: 46px;
   align-items: center;
@@ -70,13 +71,25 @@
   padding: 0;
   color: var(--muted);
 }
-.app-shell .window-controls button:hover {
+.app-shell .window-controls button:hover,
+.startup-window .window-controls button:hover {
   background: var(--hover);
   color: var(--ink);
 }
-.app-shell .window-controls .window-close:hover {
+.app-shell .window-controls .window-close:hover,
+.startup-window .window-controls .window-close:hover {
   background: #c42b1c;
   color: #fff;
+}
+.startup-topbar {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 32px;
+  padding: 0;
+  background: color-mix(in srgb, var(--panel) 65%, transparent);
+}
+.startup-window .startup {
+  padding-top: 32px;
 }
 .app-shell .content-meta {
   flex-wrap: wrap;

@@ -1,5 +1,6 @@
 import { WarmTooltip } from "./WarmTooltip";
-import { WindowControls } from "./WindowControls";
+import { FirstRunGuide } from "./FirstRunGuide";
+import { StartupWindow, WindowControls } from "./WindowControls";
 import { GlideSelect } from "./GlideSelect";
 import { TransferDialog } from "./TransferDialog";
 import { TaskPanel, useTasks } from "./TaskPanel";
@@ -164,6 +165,7 @@ export default function App() {
   const [filters, setFilters] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   const [modal, setModal] = useState("");
+  const [guideRequest, setGuideRequest] = useState(0);
   const [exportTag, setExportTag] = useState<Tag>();
   const [transferMode, setTransferMode] = useState<"export" | "import">();
   const [transferIds, setTransferIds] = useState<string[]>([]);
@@ -182,6 +184,7 @@ export default function App() {
   );
   const initialized = useRef(false);
   const closeAllowed = useRef(false);
+  const closeInProgress = useRef(false);
   const recursiveRef = useRef(recursive);
   recursiveRef.current = recursive;
   const currentScope = scopes.find((x) => x.id === query.scope)!;
@@ -436,6 +439,8 @@ export default function App() {
       win.onCloseRequested(async (e) => {
         if (closeAllowed.current) return;
         e.preventDefault();
+        if (closeInProgress.current) return;
+        closeInProgress.current = true;
         try {
           await flush();
           await settingsWrites.current;
@@ -484,6 +489,8 @@ export default function App() {
             await api("main.close");
             closeAllowed.current = false;
           }
+        } finally {
+          closeInProgress.current = false;
         }
       }),
     );
@@ -828,9 +835,7 @@ export default function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && inFiles) {
         e.preventDefault();
-        setSelected(results.files.slice(0, 1000).map((f) => f.id));
-        if (results.files.length > 1000)
-          tell("批量操作每次最多选择 1,000 个文件");
+        if (!busy) selectAllResults();
       }
       if (e.key === "Escape") {
         setSelected([]);
@@ -858,26 +863,32 @@ export default function App() {
     quick,
     exportTag,
     transferMode,
+    busy,
+    selectAllResults,
   ]);
 
   if (fatal)
     return (
-      <div className="startup">
-        <img src="/icon.svg" alt="拾签" />
-        <h1>资料库暂时无法打开</h1>
-        <p>{fatal}</p>
-        <button className="button primary" onClick={() => location.reload()}>
-          重新尝试
-        </button>
-      </div>
+      <StartupWindow>
+        <div className="startup">
+          <img src="/icon.svg" alt="拾签" />
+          <h1>资料库暂时无法打开</h1>
+          <p>{fatal}</p>
+          <button className="button primary" onClick={() => location.reload()}>
+            重新尝试
+          </button>
+        </div>
+      </StartupWindow>
     );
   if (!boot)
     return (
-      <div className="startup">
-        <img src="/icon.svg" alt="拾签" />
-        <LoaderCircle className="spin" />
-        <p>正在打开你的文件工作台…</p>
-      </div>
+      <StartupWindow>
+        <div className="startup">
+          <img src="/icon.svg" alt="拾签" />
+          <LoaderCircle className="spin" />
+          <p>正在打开你的文件工作台…</p>
+        </div>
+      </StartupWindow>
     );
   return (
     <div
@@ -886,6 +897,13 @@ export default function App() {
       data-busy={busy}
     >
       <TagDropFeedback tags={boot.tags} run={run} onNotify={tell} />
+      <FirstRunGuide
+        library={boot.dataPath}
+        folderEnabled={boot.settings.folderAutoTagging !== false}
+        aiConfigured={!!(boot.settings.ai?.endpoint && boot.settings.ai?.model)}
+        helpRequest={guideRequest}
+        onNotice={(text) => tell(text, true)}
+      />
       <header className="topbar app-topbar">
         <div className="top-leading-actions">
           <button
@@ -1854,6 +1872,10 @@ export default function App() {
       {modal === "settings" && (
         <Modal title="偏好设置" onClose={() => setModal("")}>
           <SettingsPanel
+            onHelp={() => {
+              setModal("");
+              setGuideRequest((value) => value + 1);
+            }}
             boot={boot}
             theme={theme}
             setTheme={(s) => {

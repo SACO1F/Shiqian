@@ -4,14 +4,14 @@
   <p><strong>顺手贴上标签，随时找回灵感。</strong></p>
   <p>一个围绕本地文件、多标签与轻量浮窗设计的 Windows 资料整理工具。</p>
   <p>
-    <img alt="版本 0.3.0-beta.9" src="https://img.shields.io/badge/version-0.3.0--beta.9-527565" />
+    <img alt="版本 0.3.0-beta.12" src="https://img.shields.io/badge/version-0.3.0--beta.12-527565" />
     <img alt="Windows 11 x64" src="https://img.shields.io/badge/platform-Windows%2011%20x64-607D8B" />
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8" />
     <img alt="本地资料库" src="https://img.shields.io/badge/data-local%20first-8B7AA8" />
   </p>
   <p>
-    <a href="docs/beta-v0.3-beta9.md">Beta.9 体验修复指南</a> ·
-    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9"><strong>Beta.9 下载</strong></a> ·
+    <a href="docs/beta-v0.3-beta12.md">Beta.12 使用与修复指南</a> ·
+    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.12"><strong>Beta.12 下载</strong></a> ·
     <a href="docs/desktop-guide.md">使用与开发指南</a> ·
     <a href="docs/roadmap.md">开发路线</a> ·
     <a href="docs/agent-integration.md">Agent 结合分析</a>
@@ -20,7 +20,7 @@
 
 ---
 
-> **当前版本：v0.3.0-beta.9，体验修复候选。** 将撤销、刷新和菜单切换移动到最上方自定义标题栏，移除下方多余工具栏，保留窗口控制及此前交互修复。本地交付位于 `releases/v0.3.0-beta.9/`，见 [使用说明](docs/beta-v0.3-beta9.md)、[更新记录](docs/release-notes-v0.3-beta9.md) 和 [验收范围](docs/validation-v0.3-beta9.md)。GitHub 提供 [Beta.9 预发布下载](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)。干净系统、覆盖安装、跨设备、多屏混合 DPI 与全天运行仍待实机验收。
+> **当前本地候选：v0.3.0-beta.12。** 修复侧栏分隔条偶发绿色焦点框，并合入首次启动 AI 提醒和使用说明。见[候选说明](docs/beta-v0.3-beta12.md)、[验证记录](docs/validation-v0.3-beta12.md)及[文件预览研究](docs/file-preview-research-2026-10-10.md)。安装包见 [GitHub Beta.12 预发布](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.12)。
 
 ## 把标签，贴到文件上
 
@@ -73,7 +73,7 @@ Beta.2 新增后台任务入口，可在资料包校验和复制期间继续搜�
 
 ## 开始使用
 
-前往 [v0.3.0-beta.9 下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)，或使用本地 `releases/v0.3.0-beta.9/` 的交付文件。
+前往 [v0.3.0-beta.9 下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)。本地最新候选位于 `releases/v0.3.0-beta.10/`；确认实机验收边界后再分发。
 
 | 下载                                                                                                                                | 适合谁                                                     |
 | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
