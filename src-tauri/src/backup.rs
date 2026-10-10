@@ -153,6 +153,12 @@ impl Store {
         target
             .execute("DELETE FROM settings WHERE key='ai'", [])
             .map_err(sql_err)?;
+        target
+            .execute(
+                "DELETE FROM settings WHERE key IN ('lastBackup','recoveryNotice','floatingPosition')",
+                [],
+            )
+            .map_err(sql_err)?;
         target.execute("UPDATE ai_jobs SET status='cancelled',error='从备份恢复后请重新识别' WHERE status IN ('queued','running')",[]).map_err(sql_err)?;
         validate_database(&target)?;
         let manifest = Manifest {
@@ -212,8 +218,12 @@ impl Store {
             .sync_all()
             .map_err(|e| err("BACKUP_FAILED", e))?;
         output.persist(path).map_err(|e| err("BACKUP_FAILED", e))?;
+        let notice = self
+            .remember_backup(path, "manual")
+            .err()
+            .map(|_| "备份已保存，最近备份状态暂未更新");
         Ok(
-            json!({"path":path.to_string_lossy(),"fileCount":manifest.file_count,"tagCount":manifest.tag_count}),
+            json!({"path":path.to_string_lossy(),"fileCount":manifest.file_count,"tagCount":manifest.tag_count,"notice":notice}),
         )
     }
     pub fn restore_backup(&mut self, path: &Path) -> Result<Value> {
@@ -258,9 +268,16 @@ impl Store {
             .execute_batch("PRAGMA foreign_keys=ON; PRAGMA wal_checkpoint(FULL);")
             .map_err(sql_err)?;
         self.undo.clear();
+        self.recovery_notice.clear();
         self.clear_cache()?;
         fs::remove_file(marker).map_err(|e| err("RESTORE_FAILED", e))?;
-        Ok(json!({"ok":true,"recoveryBackup":recovery.to_string_lossy(),"info":inspected.info}))
+        let notice = self
+            .remember_backup(&recovery, "beforeRestore")
+            .err()
+            .map(|_| "恢复已完成，最近备份状态暂未更新");
+        Ok(
+            json!({"ok":true,"recoveryBackup":recovery.to_string_lossy(),"info":inspected.info,"notice":notice}),
+        )
     }
     pub fn clear_cache(&self) -> Result<Value> {
         let mut count = 0;

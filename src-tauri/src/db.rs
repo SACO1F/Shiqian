@@ -140,11 +140,23 @@ impl Store {
             undo: vec![],
             recovery_notice: String::new(),
         };
+        store.recovery_notice = store
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key='recoveryNotice'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sql_err)?
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
         if root.join("restore-state.toml").exists() {
             store.validate()?;
             store.recovery_notice =
                 "检测到上次恢复流程中断，数据库完整性已验证。恢复前备份保留在 backups 目录。"
                     .into();
+            store.remember_recovery()?;
             std::fs::remove_file(root.join("restore-state.toml"))
                 .map_err(|e| err("STORAGE_UNAVAILABLE", e))?;
         }
@@ -417,6 +429,7 @@ impl Store {
             "sidebarCollapsed",
             "sidebarWidth",
             "floatingSize",
+            "floatingPosition",
             "floatingAlwaysOnTop",
             "folderAutoTagging",
         ]
@@ -446,6 +459,16 @@ impl Store {
         }
         if name == "floatingAlwaysOnTop" && !v["value"].is_boolean() {
             return Err(err("INVALID_INPUT", "置顶状态必须为布尔值"));
+        }
+        if name == "floatingPosition"
+            && !(v["value"]["x"]
+                .as_i64()
+                .is_some_and(|x| i32::try_from(x).is_ok())
+                && v["value"]["y"]
+                    .as_i64()
+                    .is_some_and(|y| i32::try_from(y).is_ok()))
+        {
+            return Err(err("INVALID_INPUT", "浮窗位置必须为有效的屏幕坐标"));
         }
         if matches!(name, "sidebarCollapsed" | "folderAutoTagging") && !v["value"].is_boolean() {
             return Err(err("INVALID_INPUT", "菜单收拢状态必须为布尔值"));
@@ -559,6 +582,12 @@ fn checked_files(tx: &Transaction<'_>, v: &Value) -> Result<Vec<(String, i64)>> 
 
 impl Store {
     pub fn mutate(&mut self, action: &str, v: &Value) -> Result<Value> {
+        let floating_pins = if action == "files.tags" && !string_list(v, "add").is_empty() {
+            Some(string_list(&self.floating_presets()?, "ids"))
+        } else {
+            None
+        };
+
         let mut undo = Undo {
             label: String::new(),
             steps: vec![],
@@ -646,6 +675,19 @@ impl Store {
                         params![now(), tid],
                     )
                     .map_err(sql_err)?;
+                }
+                if let Some(mut pins) = floating_pins {
+                    for tid in &add {
+                        let origin: String = tx
+                            .query_row("SELECT created_by FROM tags WHERE id=?", [tid], |r| {
+                                r.get(0)
+                            })
+                            .map_err(sql_err)?;
+                        if origin != "folder" && !pins.contains(tid) {
+                            pins.push(tid.clone());
+                        }
+                    }
+                    tx.execute("INSERT INTO settings(key,value) VALUES('floatingTags',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [json!(pins).to_string()]).map_err(sql_err)?;
                 }
                 undo.label = "修改文件标签".into();
                 for (id, restore) in crate::auto_tags::cleanup_orphan_ai_tags(&tx)? {

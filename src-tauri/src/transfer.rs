@@ -12,7 +12,7 @@ use std::{
     collections::HashSet,
     fs::{self, File},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
@@ -29,7 +29,14 @@ pub struct Control {
     pub busy: AtomicBool,
     pub cancel: AtomicBool,
     pub bytes: AtomicU64,
+    pub completed: AtomicU64,
+    total: AtomicU64,
+    file_total: AtomicU64,
     phase: Mutex<String>,
+    task: Mutex<Value>,
+    history: Mutex<Vec<Value>>,
+    #[cfg(test)]
+    chunk_hook: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
 struct BusyGuard<'a>(&'a Control);
 impl Drop for BusyGuard<'_> {
@@ -38,7 +45,11 @@ impl Drop for BusyGuard<'_> {
     }
 }
 impl Control {
-    pub fn run<T>(&self, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    #[cfg(test)]
+    pub fn set_chunk_hook(&self, hook: impl Fn() + Send + 'static) {
+        *self.chunk_hook.lock().unwrap() = Some(Box::new(hook));
+    }
+    pub fn run_named<T: Serialize>(&self, kind: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
         if self
             .busy
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -49,16 +60,46 @@ impl Control {
         let _guard = BusyGuard(self);
         self.cancel.store(false, Ordering::SeqCst);
         self.bytes.store(0, Ordering::SeqCst);
+        self.total.store(0, Ordering::SeqCst);
+        self.completed.store(0, Ordering::SeqCst);
+        self.file_total.store(0, Ordering::SeqCst);
+        if let Ok(mut task) = self.task.lock() {
+            *task = json!({"id":id(),"kind":kind,"startedAt":now(),"state":"running"});
+        }
         self.phase("校验");
-        f()
+        let result = f();
+        if let Ok(mut task) = self.task.lock() {
+            task["finishedAt"] = json!(now());
+            task["state"] = json!(match &result {
+                Ok(_) => "done",
+                Err(e) if e.starts_with("TRANSFER_CANCELLED:") => "cancelled",
+                Err(_) => "failed",
+            });
+            match &result {
+                Ok(value) => task["result"] = serde_json::to_value(value).unwrap_or(Value::Null),
+                Err(error) => task["error"] = json!(error),
+            }
+            if let Ok(mut history) = self.history.lock() {
+                history.insert(0, task.clone());
+                history.truncate(12);
+            }
+        }
+        result
     }
     fn phase(&self, text: &str) {
         if let Ok(mut p) = self.phase.lock() {
             *p = text.into();
         }
     }
+    fn progress(&self, text: &str, bytes: u64, files: usize) {
+        self.bytes.store(0, Ordering::SeqCst);
+        self.total.store(bytes, Ordering::SeqCst);
+        self.completed.store(0, Ordering::SeqCst);
+        self.file_total.store(files as u64, Ordering::SeqCst);
+        self.phase(text);
+    }
     pub fn status(&self) -> Value {
-        json!({"busy":self.busy.load(Ordering::SeqCst),"bytes":self.bytes.load(Ordering::SeqCst),"phase":self.phase.lock().map(|p|p.clone()).unwrap_or_default()})
+        json!({"busy":self.busy.load(Ordering::SeqCst),"bytes":self.bytes.load(Ordering::SeqCst),"totalBytes":self.total.load(Ordering::SeqCst),"completed":self.completed.load(Ordering::SeqCst),"fileTotal":self.file_total.load(Ordering::SeqCst),"phase":self.phase.lock().map(|p|p.clone()).unwrap_or_default(),"task":self.task.lock().map(|t|t.clone()).unwrap_or_default(),"history":self.history.lock().map(|h|h.clone()).unwrap_or_default()})
     }
     fn check(&self) -> Result<()> {
         if self.cancel.load(Ordering::SeqCst) {
@@ -124,6 +165,10 @@ fn digest<R: Read, W: Write>(
             .map_err(|e| err("TRANSFER_IO", e))?;
         hasher.update(&buffer[..n]);
         control.bytes.fetch_add(n as u64, Ordering::SeqCst);
+        #[cfg(test)]
+        if let Some(hook) = control.chunk_hook.lock().unwrap().as_ref() {
+            hook();
+        }
     }
     if count != expected {
         return Err(err("FILE_CHANGED", "文件长度与资料包声明不一致"));
@@ -232,7 +277,11 @@ pub fn export(plan: Plan, path: &Path, expected: &str, control: &Control) -> Res
         created_at: now(),
         files: vec![],
     };
-    control.phase("打包文件");
+    control.progress(
+        "打包文件",
+        plan.files.iter().map(|f| f.bytes as u64).sum(),
+        plan.files.len(),
+    );
     {
         let mut zip = ZipWriter::new(output.as_file_mut());
         let options =
@@ -255,6 +304,7 @@ pub fn export(plan: Plan, path: &Path, expected: &str, control: &Control) -> Res
             {
                 return Err(err("FILE_CHANGED", &f.name));
             }
+            control.completed.store((i + 1) as u64, Ordering::SeqCst);
             manifest.files.push(Entry {
                 name: f.name.clone(),
                 entry,
@@ -395,8 +445,8 @@ fn inspect(path: &Path, control: &Control) -> Result<(ZipArchive<File>, Manifest
             return Err(err("INVALID_PACKAGE", "资料包含额外、重复或链接条目"));
         }
     }
-    control.phase("校验文件");
-    for f in &m.files {
+    control.progress("校验文件", total, m.files.len());
+    for (i, f) in m.files.iter().enumerate() {
         let mut z = zip
             .by_name(&f.entry)
             .map_err(|e| err("INVALID_PACKAGE", e))?;
@@ -405,6 +455,7 @@ fn inspect(path: &Path, control: &Control) -> Result<(ZipArchive<File>, Manifest
         {
             return Err(err("CHECKSUM_MISMATCH", &f.name));
         }
+        control.completed.store((i + 1) as u64, Ordering::SeqCst);
     }
     Ok((zip, m, sha(&content)))
 }
@@ -412,19 +463,182 @@ pub fn preview(path: &Path, control: &Control) -> Result<Value> {
     let (_, m, fingerprint) = inspect(path, control)?;
     Ok(summary(&m, &fingerprint))
 }
-impl Store {
-    pub fn import_package(
-        &mut self,
-        path: &Path,
-        destination: &Path,
-        expected: &str,
-        control: &Control,
-    ) -> Result<Value> {
-        let (mut zip, m, fingerprint) = inspect(path, control)?;
-        if fingerprint != expected {
-            return Err(err("TRANSFER_CHANGED", "资料包已变化，请重新预览"));
+/// Owns only copies created by this task. Dropping before commit rolls them back.
+pub struct PreparedImport {
+    root: PathBuf,
+    folder: PathBuf,
+    marker: PathBuf,
+    owns_marker: bool,
+    manifest: Manifest,
+    extracted: Vec<fsops::FileMeta>,
+    created: Vec<PathBuf>,
+    directories: Vec<PathBuf>,
+    committed: bool,
+}
+impl Drop for PreparedImport {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
         }
-        let receipt = format!("packageReceipt:{}", m.package_id);
+        let mut cleaned = true;
+        for path in &self.created {
+            if fs::remove_file(path).is_err() {
+                cleaned = false;
+            }
+        }
+        for path in self.directories.iter().rev() {
+            if fs::remove_dir(path).is_err() {
+                cleaned = false;
+            }
+        }
+        if fs::remove_dir(&self.folder).is_err() {
+            cleaned = false;
+        }
+        if cleaned && self.owns_marker {
+            let _ = fs::remove_file(&self.marker);
+        }
+    }
+}
+impl PreparedImport {
+    fn finish(mut self, mut value: Value) -> Value {
+        self.committed = true;
+        if fs::remove_file(&self.marker).is_err() {
+            value["notice"] = json!("导入已完成；下次启动将核对并清理恢复记录");
+        }
+        value
+    }
+}
+fn prepare_import(
+    root: &Path,
+    path: &Path,
+    destination: &Path,
+    expected: &str,
+    control: &Control,
+    preflight: impl FnOnce(&str) -> Result<()>,
+) -> Result<PreparedImport> {
+    // Archive verification, extraction and file inspection never require a Store lock.
+    let (mut zip, m, fingerprint) = inspect(path, control)?;
+    if fingerprint != expected {
+        return Err(err("TRANSFER_CHANGED", "资料包已变化，请重新预览"));
+    }
+    preflight(&m.package_id)?;
+    let parent = fs::canonicalize(destination).map_err(|e| err("TRANSFER_PATH", e))?;
+    if !parent.is_dir()
+        || parent.starts_with(fs::canonicalize(root).map_err(|e| err("TRANSFER_PATH", e))?)
+    {
+        return Err(err("TRANSFER_PATH", "请选择应用资料库之外的文件夹"));
+    }
+    let marker = root.join("transfer-state.json");
+    if marker.exists() {
+        return Err(err(
+            "TRANSFER_RECOVERY",
+            "存在未处理的资料包中断记录，请重启后查看恢复提示",
+        ));
+    }
+    let folder = parent.join(format!("拾签资料-{}", m.package_id));
+    fs::create_dir(&folder).map_err(|e| {
+        err(
+            "TRANSFER_PATH",
+            format!("{e}；请另选目录，已有文件夹不会覆盖"),
+        )
+    })?;
+    let mut prepared = PreparedImport {
+        root: root.into(),
+        folder,
+        marker,
+        owns_marker: false,
+        manifest: m,
+        extracted: vec![],
+        created: vec![],
+        directories: vec![],
+        committed: false,
+    };
+    let receipt = format!("packageReceipt:{}", prepared.manifest.package_id);
+    let mut journal = tempfile::NamedTempFile::new_in(root).map_err(|e| err("TRANSFER_IO", e))?;
+    journal.write_all(json!({"packageId":prepared.manifest.package_id,"path":prepared.folder.to_string_lossy(),"receipt":receipt}).to_string().as_bytes()).map_err(|e| err("TRANSFER_IO", e))?;
+    journal
+        .as_file()
+        .sync_all()
+        .map_err(|e| err("TRANSFER_IO", e))?;
+    journal
+        .persist_noclobber(&prepared.marker)
+        .map_err(|e| err("TRANSFER_IO", e))?;
+    prepared.owns_marker = true;
+    control.progress(
+        "复制文件",
+        prepared.manifest.files.iter().map(|f| f.bytes).sum(),
+        prepared.manifest.files.len(),
+    );
+    for (i, f) in prepared.manifest.files.iter().enumerate() {
+        control.check()?;
+        let directory = prepared.folder.join(format!("{:05}", i + 1));
+        fs::create_dir(&directory).map_err(|e| err("TRANSFER_IO", e))?;
+        prepared.directories.push(directory.clone());
+        let target = directory.join(&f.name);
+        let mut out = File::options()
+            .create_new(true)
+            .write(true)
+            .open(&target)
+            .map_err(|e| err("TRANSFER_IO", e))?;
+        prepared.created.push(target.clone());
+        let mut z = zip
+            .by_name(&f.entry)
+            .map_err(|e| err("INVALID_PACKAGE", e))?;
+        if digest(&mut z, &mut out, f.bytes, control)? != f.sha256 {
+            return Err(err("CHECKSUM_MISMATCH", &f.name));
+        }
+        if f.modified >= 0 {
+            out.set_times(std::fs::FileTimes::new().set_modified(
+                std::time::UNIX_EPOCH + std::time::Duration::from_millis(f.modified as u64),
+            ))
+            .map_err(|e| err("TRANSFER_IO", e))?;
+        }
+        out.sync_all().map_err(|e| err("TRANSFER_IO", e))?;
+        drop(out);
+        prepared.extracted.push(fsops::inspect(&target)?);
+        control.completed.store((i + 1) as u64, Ordering::SeqCst);
+    }
+    // Detect replacements/changes during staging before entering the database transaction.
+    for meta in &prepared.extracted {
+        control.check()?;
+        let current = fsops::inspect(Path::new(&meta.path))?;
+        if current.identity != meta.identity || current.revision != meta.revision {
+            return Err(err(
+                "FILE_CHANGED",
+                "接收文件在导入期间发生变化，请重新导入",
+            ));
+        }
+    }
+    Ok(prepared)
+}
+pub fn import_shared(
+    store: &Mutex<Store>,
+    path: &Path,
+    destination: &Path,
+    expected: &str,
+    control: &Control,
+) -> Result<Value> {
+    let root = store
+        .lock()
+        .map_err(|_| err("INTERNAL_ERROR", "资料库锁异常"))?
+        .root
+        .clone();
+    let prepared = prepare_import(&root, path, destination, expected, control, |package_id| {
+        store
+            .lock()
+            .map_err(|_| err("INTERNAL_ERROR", "资料库锁异常"))?
+            .check_package_receipt(package_id)
+    })?;
+    control.check()?;
+    let value = store
+        .lock()
+        .map_err(|_| err("INTERNAL_ERROR", "资料库锁异常"))?
+        .commit_package(&prepared, control)?;
+    Ok(prepared.finish(value))
+}
+impl Store {
+    fn check_package_receipt(&self, package_id: &str) -> Result<()> {
+        let receipt = format!("packageReceipt:{package_id}");
         if self
             .conn
             .query_row("SELECT value FROM settings WHERE key=?", [&receipt], |r| {
@@ -439,171 +653,110 @@ impl Store {
                 "本库已导入这份资料包；请查看原导入文件，避免重复",
             ));
         }
-        let parent = fs::canonicalize(destination).map_err(|e| err("TRANSFER_PATH", e))?;
-        if !parent.is_dir()
-            || parent
-                .starts_with(fs::canonicalize(&self.root).map_err(|e| err("TRANSFER_PATH", e))?)
-        {
-            return Err(err("TRANSFER_PATH", "请选择应用资料库之外的文件夹"));
-        }
-        if self.root.join("transfer-state.json").exists() {
-            return Err(err(
-                "TRANSFER_RECOVERY",
-                "存在未处理的资料包中断记录，请重启后查看恢复提示",
-            ));
-        }
-        let folder = parent.join(format!("拾签资料-{}", m.package_id));
-        fs::create_dir(&folder).map_err(|e| {
-            err(
-                "TRANSFER_PATH",
-                format!("{e}；请另选目录，已有文件夹不会覆盖"),
-            )
+        Ok(())
+    }
+    #[cfg(test)]
+    pub fn import_package(
+        &mut self,
+        path: &Path,
+        destination: &Path,
+        expected: &str,
+        control: &Control,
+    ) -> Result<Value> {
+        let root = self.root.clone();
+        let prepared = prepare_import(&root, path, destination, expected, control, |package_id| {
+            self.check_package_receipt(package_id)
         })?;
-        // The marker is durable before extraction. On a crash copies are retained, never silently deleted.
-        let marker = self.root.join("transfer-state.json");
-        let marker_result = (|| -> Result<()> {
-            let mut journal =
-                tempfile::NamedTempFile::new_in(&self.root).map_err(|e| err("TRANSFER_IO", e))?;
-            journal.write_all(json!({"packageId":m.package_id,"path":folder.to_string_lossy(),"receipt":receipt}).to_string().as_bytes()).map_err(|e|err("TRANSFER_IO",e))?;
-            journal
-                .as_file()
-                .sync_all()
-                .map_err(|e| err("TRANSFER_IO", e))?;
-            journal
-                .persist_noclobber(&marker)
-                .map_err(|e| err("TRANSFER_IO", e))?;
-            Ok(())
-        })();
-        if let Err(e) = marker_result {
-            let _ = fs::remove_dir(&folder);
-            return Err(e);
+        let value = self.commit_package(&prepared, control)?;
+        Ok(prepared.finish(value))
+    }
+    fn commit_package(&mut self, prepared: &PreparedImport, control: &Control) -> Result<Value> {
+        if self.root != prepared.root {
+            return Err(err("TRANSFER_CHANGED", "资料库发生变化，请重新导入"));
         }
-        control.phase("复制并导入");
-        let mut created = vec![];
-        let mut directories = vec![];
-        let outcome = (|| -> Result<Value> {
-            let mut extracted = vec![];
-            for (i, f) in m.files.iter().enumerate() {
-                control.check()?;
-                // Numbered names preserve extensions and disambiguate all same-name files.
-                let directory = folder.join(format!("{:05}", i + 1));
-                fs::create_dir(&directory).map_err(|e| err("TRANSFER_IO", e))?;
-                directories.push(directory.clone());
-                let target = directory.join(&f.name);
-                let mut out = File::options()
-                    .create_new(true)
-                    .write(true)
-                    .open(&target)
-                    .map_err(|e| err("TRANSFER_IO", e))?;
-                created.push(target.clone());
-                let mut z = zip
-                    .by_name(&f.entry)
-                    .map_err(|e| err("INVALID_PACKAGE", e))?;
-                if digest(&mut z, &mut out, f.bytes, control)? != f.sha256 {
-                    return Err(err("CHECKSUM_MISMATCH", &f.name));
-                }
-                if f.modified >= 0 {
-                    out.set_times(std::fs::FileTimes::new().set_modified(
-                        std::time::UNIX_EPOCH + std::time::Duration::from_millis(f.modified as u64),
-                    ))
-                    .map_err(|e| err("TRANSFER_IO", e))?;
-                }
-                out.sync_all().map_err(|e| err("TRANSFER_IO", e))?;
-                drop(out);
-                extracted.push(fsops::inspect(&target)?);
-            }
-            control.check()?;
-            self.conn
-                .execute_batch("SAVEPOINT package_import")
-                .map_err(sql_err)?;
-            let commit = (|| -> Result<Value> {
-                let mut file_ids = vec![];
-                let saved: Option<String> = self
-                    .conn
-                    .query_row(
-                        "SELECT value FROM settings WHERE key='floatingTags'",
-                        [],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(sql_err)?;
-                let mut pins: Vec<String> = saved
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default();
-                for (f, meta) in m.files.iter().zip(&extracted) {
-                    control.check()?;
-                    let fid = id();
-                    self.conn.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,identity,note,note_key,favorite) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",params![fid,meta.path,meta.path,meta.parent,meta.name,key(&meta.name),meta.extension,meta.kind,meta.bytes,meta.modified,f.added,meta.revision,meta.identity,f.note,key(&f.note),f.favorite]).map_err(sql_err)?;
-                    for t in &f.tags {
-                        let tag = self.create_tag_with_source(&t.name, &t.created_by)?;
-                        let ai =
-                            t.ai.as_ref()
-                                .map(|a| serde_json::to_string(a).unwrap())
-                                .unwrap_or_else(|| "{}".into());
-                        self.conn.execute("INSERT INTO file_tags(file_id,tag_id,source,ai_meta) VALUES(?,?,?,?)",params![fid,tag.id,t.source,ai]).map_err(sql_err)?;
-                        if t.source == "ai"
-                            && t.ai.as_ref().map(|a| a.confirmed).unwrap_or(false)
-                            && tag.created_by != "folder"
-                            && !pins.contains(&tag.id)
-                        {
-                            pins.push(tag.id);
-                        }
-                    }
-                    file_ids.push(fid);
-                }
-                self.conn.execute("INSERT INTO settings(key,value) VALUES('floatingTags',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!(pins).to_string()]).map_err(sql_err)?;
-                self.conn.execute("INSERT INTO settings(key,value) VALUES(?,?)",params![receipt,json!({"path":folder.to_string_lossy(),"ids":file_ids,"importedAt":now()}).to_string()]).map_err(sql_err)?;
-                self.validate()?;
-                control.check()?;
-                Ok(
-                    json!({"path":folder.to_string_lossy(),"fileCount":file_ids.len(),"ids":file_ids,"packageId":m.package_id}),
+        let m = &prepared.manifest;
+        let folder = &prepared.folder;
+        let extracted = &prepared.extracted;
+        let receipt = format!("packageReceipt:{}", m.package_id);
+        self.check_package_receipt(&m.package_id)?;
+        control.check()?;
+        control.progress("保存标注", 0, m.files.len());
+        self.conn
+            .execute_batch("SAVEPOINT package_import")
+            .map_err(sql_err)?;
+        let commit = (|| -> Result<Value> {
+            let mut file_ids = vec![];
+            let saved: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key='floatingTags'",
+                    [],
+                    |r| r.get(0),
                 )
-            })();
-            match commit {
-                Ok(value) => {
-                    if let Err(e) = self.conn.execute_batch("RELEASE package_import") {
-                        let _ = self
-                            .conn
-                            .execute_batch("ROLLBACK TO package_import; RELEASE package_import");
-                        return Err(sql_err(e));
+                .optional()
+                .map_err(sql_err)?;
+            let mut pins: Vec<String> = saved
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_default();
+            for (i, (f, meta)) in m.files.iter().zip(extracted).enumerate() {
+                control.check()?;
+                let fid = id();
+                self.conn.execute("INSERT INTO files(id,path,path_key,parent,name,name_key,extension,kind,bytes,modified,added,revision,identity,note,note_key,favorite) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",params![fid,meta.path,meta.path,meta.parent,meta.name,key(&meta.name),meta.extension,meta.kind,meta.bytes,meta.modified,f.added,meta.revision,meta.identity,f.note,key(&f.note),f.favorite]).map_err(sql_err)?;
+                for t in &f.tags {
+                    let tag = self.create_tag_with_source(&t.name, &t.created_by)?;
+                    let ai =
+                        t.ai.as_ref()
+                            .map(|a| serde_json::to_string(a).unwrap())
+                            .unwrap_or_else(|| "{}".into());
+                    self.conn
+                        .execute(
+                            "INSERT INTO file_tags(file_id,tag_id,source,ai_meta) VALUES(?,?,?,?)",
+                            params![fid, tag.id, t.source, ai],
+                        )
+                        .map_err(sql_err)?;
+                    if t.source == "ai"
+                        && t.ai.as_ref().map(|a| a.confirmed).unwrap_or(false)
+                        && tag.created_by != "folder"
+                        && !pins.contains(&tag.id)
+                    {
+                        pins.push(tag.id);
                     }
-                    self.undo.clear();
-                    Ok(value)
                 }
-                Err(e) => {
+                file_ids.push(fid);
+                control.completed.store((i + 1) as u64, Ordering::SeqCst);
+            }
+            self.conn.execute("INSERT INTO settings(key,value) VALUES('floatingTags',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[json!(pins).to_string()]).map_err(sql_err)?;
+            self.conn
+                .execute(
+                    "INSERT INTO settings(key,value) VALUES(?,?)",
+                    params![
+                        receipt,
+                        json!({"path":folder.to_string_lossy(),"ids":file_ids,"importedAt":now()})
+                            .to_string()
+                    ],
+                )
+                .map_err(sql_err)?;
+            self.validate()?;
+            control.check()?;
+            Ok(
+                json!({"path":folder.to_string_lossy(),"fileCount":file_ids.len(),"ids":file_ids,"packageId":m.package_id}),
+            )
+        })();
+        match commit {
+            Ok(value) => {
+                if let Err(e) = self.conn.execute_batch("RELEASE package_import") {
                     let _ = self
                         .conn
                         .execute_batch("ROLLBACK TO package_import; RELEASE package_import");
-                    Err(e)
+                    return Err(sql_err(e));
                 }
-            }
-        })();
-        match outcome {
-            Ok(mut v) => {
-                if fs::remove_file(&marker).is_err() {
-                    v["notice"] = json!("导入已完成；下次启动将核对并清理恢复记录");
-                }
-                Ok(v)
+                self.undo.clear();
+                Ok(value)
             }
             Err(e) => {
-                // Remove only files created by this invocation; never recurse through user directories.
-                let mut cleaned = true;
-                for p in created {
-                    if fs::remove_file(p).is_err() {
-                        cleaned = false;
-                    }
-                }
-                for directory in directories.into_iter().rev() {
-                    if fs::remove_dir(directory).is_err() {
-                        cleaned = false;
-                    }
-                }
-                if fs::remove_dir(&folder).is_err() {
-                    cleaned = false;
-                }
-                if cleaned {
-                    let _ = fs::remove_file(&marker);
-                }
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO package_import; RELEASE package_import");
                 Err(e)
             }
         }
@@ -646,6 +799,7 @@ impl Store {
             .map_err(|e| err("TRANSFER_RECOVERY", e))?;
         report.sync_all().map_err(|e| err("TRANSFER_RECOVERY", e))?;
         self.recovery_notice = format!("{} {}", self.recovery_notice, notice).trim().into();
+        self.remember_recovery()?;
         fs::remove_file(marker).map_err(|e| err("TRANSFER_RECOVERY", e))?;
         Ok(())
     }

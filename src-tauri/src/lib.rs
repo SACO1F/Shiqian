@@ -5,17 +5,21 @@ mod annotation;
 mod auto_tag_tests;
 mod auto_tags;
 mod backup;
+#[cfg(test)]
+mod beta2_tests;
 mod db;
 mod floating;
 mod fsops;
 mod model;
 mod shell_target;
+mod support;
 mod tag_export;
 #[cfg(test)]
 mod tests;
 mod transfer;
 #[cfg(test)]
 mod transfer_tests;
+mod window_geometry;
 
 use crate::{db::Store, model::*};
 use serde_json::{json, Value};
@@ -55,7 +59,18 @@ impl AppState {
             .lock()
             .map_err(|_| err("INTERNAL_ERROR", "资料库锁异常，请重启"))
     }
+    fn blocks_exit(&self) -> bool {
+        self.transfer.busy.load(Ordering::SeqCst)
+            || self
+                .jobs
+                .lock()
+                .map(|jobs| jobs.values().any(|(job, _)| !job.done))
+                .unwrap_or(true)
+    }
     fn start_import(&self, app: tauri::AppHandle, v: &Value) -> Result<Value> {
+        if self.transfer.busy.load(Ordering::SeqCst) {
+            return Err(err("TRANSFER_BUSY", "请等待当前资料包或恢复任务完成"));
+        }
         let paths = string_list(v, "paths");
         if paths.is_empty() {
             return Err(err("INVALID_INPUT", "请选择文件或文件夹"));
@@ -129,6 +144,7 @@ impl AppState {
                                     progress.failed += 1;
                                     if progress.errors.len() < 100 {
                                         progress.errors.push(format!("{}：{e}", path.display()));
+                                        progress.failed_paths.push(canonical.clone());
                                     }
                                 }
                             }
@@ -153,6 +169,7 @@ impl AppState {
                     progress.processed += 1;
                     if progress.errors.len() < 100 {
                         progress.errors.push(format!("{}：{e}", path.display()));
+                        progress.failed_paths.push(path.to_string_lossy().into());
                     }
                 }
                 if let Ok(mut jobs) = state.jobs.lock() {
@@ -220,6 +237,41 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             store.queue_ai(&string_list(v, "ids"))?;
             Ok(json_ok())
         }
+        "ai.retry_failed" => {
+            let store = state.store()?;
+            store.retry_failed_ai()
+        }
+        "tasks.status" => {
+            let import = state
+                .jobs
+                .lock()
+                .map_err(|_| err("INTERNAL_ERROR", "任务锁异常"))?
+                .values()
+                .next()
+                .map(|(job, _)| job.clone());
+            Ok(
+                json!({"transfer":state.transfer.status(),"import":import,"ai":state.store()?.ai_summary()?}),
+            )
+        }
+        "support.status" => state.store()?.support_snapshot(),
+        "diagnostics.preview" | "diagnostics.export" => {
+            let snapshot = state.store()?.support_snapshot()?;
+            let text = support::diagnostic_report(&snapshot, &state.transfer.status());
+            if action == "diagnostics.export" {
+                support::export_report(Path::new(str_arg(v, "path")?), &text)
+            } else {
+                Ok(json!({"text":text}))
+            }
+        }
+        "recovery.dismiss" => {
+            let mut store = state.store()?;
+            store
+                .conn
+                .execute("DELETE FROM settings WHERE key='recoveryNotice'", [])
+                .map_err(sql_err)?;
+            store.recovery_notice.clear();
+            Ok(json_ok())
+        }
         "ai.cancel" => {
             let store = state.store()?;
             if v.get("ids").is_some() {
@@ -267,6 +319,13 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
         }
         "main.show" => floating::main_show(app),
         "main.close" => {
+            if state.transfer.busy.load(Ordering::SeqCst) {
+                return Err(err("TRANSFER_BUSY", "后台任务尚未完成，请等待或取消后退出"));
+            }
+            if state.blocks_exit() {
+                return Err(err("IMPORT_BUSY", "加入任务尚未停止，请等待清理完成后退出"));
+            }
+            floating::save_geometry(app, state);
             if app
                 .get_webview_window("floating")
                 .is_some_and(|w| w.is_visible().unwrap_or(false))
@@ -335,14 +394,17 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
         }
         "package.status" => Ok(state.transfer.status()),
         "package.cancel" => {
+            if state.transfer.status()["task"]["kind"] == "backup.restore" {
+                return Err(err("TRANSFER_BUSY", "恢复已开始，请等待完成"));
+            }
             state.transfer.cancel.store(true, Ordering::SeqCst);
             Ok(json_ok())
         }
         "package.plan" => Ok(state.store()?.transfer_plan(v)?.info),
-        "package.inspect" => state
-            .transfer
-            .run(|| transfer::preview(Path::new(str_arg(v, "path")?), &state.transfer)),
-        "package.export" => state.transfer.run(|| {
+        "package.inspect" => state.transfer.run_named("package.inspect", || {
+            transfer::preview(Path::new(str_arg(v, "path")?), &state.transfer)
+        }),
+        "package.export" => state.transfer.run_named("package.export", || {
             let plan = state.store()?.transfer_plan(v)?;
             transfer::export(
                 plan,
@@ -351,7 +413,7 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
                 &state.transfer,
             )
         }),
-        "package.import" => state.transfer.run(|| {
+        "package.import" => state.transfer.run_named("package.import", || {
             if state
                 .jobs
                 .lock()
@@ -361,7 +423,8 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             {
                 return Err(err("IMPORT_BUSY", "请先等待文件加入任务完成"));
             }
-            state.store()?.import_package(
+            transfer::import_shared(
+                &state.store,
                 Path::new(str_arg(v, "path")?),
                 Path::new(str_arg(v, "destination")?),
                 str_arg(v, "fingerprint")?,
@@ -391,7 +454,9 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             open::that(path).map_err(|e| err("OPEN_FAILED", e))?;
             Ok(json_ok())
         }
-        "tag.create" => Ok(json!(state.store()?.create_tag(str_arg(v, "name")?)?)),
+        "tag.create" => Ok(json!(state
+            .store()?
+            .create_workspace_tag(str_arg(v, "name")?)?)),
         "note.save" => state.store()?.save_note(v),
         "settings.save" => state.store()?.save_settings(v),
         "files.tags" | "files.favorite" | "files.remove" | "tags.rename" | "tags.delete" => {
@@ -401,7 +466,7 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
         "undo" => state.store()?.undo_last(),
         "cache.clear" => state.store()?.clear_cache(),
         "backup.export" => state.store()?.export_backup(Path::new(str_arg(v, "path")?)),
-        "backup.restore" => {
+        "backup.restore" => state.transfer.run_named("backup.restore", || {
             if state
                 .jobs
                 .lock()
@@ -414,7 +479,7 @@ fn dispatch(state: &AppState, app: &tauri::AppHandle, action: &str, v: &Value) -
             let mut store = state.store()?;
             state.ai_generation.fetch_add(1, Ordering::SeqCst);
             store.restore_backup(Path::new(str_arg(v, "path")?))
-        }
+        }),
         _ => Err(err("UNKNOWN_ACTION", action)),
     }
 }
@@ -446,10 +511,13 @@ async fn api(
                     | "folders.apply"
                     | "ai.settings.save"
                     | "ai.enqueue"
+                    | "ai.retry_failed"
                     | "ai.cancel"
                     | "ai.confirm"
                     | "backup.restore"
                     | "package.import"
+                    | "recovery.dismiss"
+                    | "backup.export"
             )
         {
             let _ = app.emit("library-changed", ());
@@ -493,6 +561,28 @@ pub fn run() {
             ai_worker::start_worker(state.store.clone(),state.ai_generation.clone(),move || {let _=ai_app.emit("library-changed",());});
             let _=state.refresh_all(app.handle().clone());Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(state) = window.app_handle().try_state::<AppState>() {
+                    if window.label() == "main" && state.blocks_exit() {
+                        api.prevent_close();
+                        let _ = window.emit("exit-blocked", ());
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![api])
-        .run(context).expect("拾签启动失败");
+        .build(context).expect("拾签启动失败")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if state.blocks_exit() {
+                        api.prevent_exit();
+                        let _ = app.emit("exit-blocked", ());
+                    } else {
+                        floating::save_geometry(app, &state);
+                    }
+                }
+            }
+        });
 }

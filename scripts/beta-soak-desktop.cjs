@@ -2,7 +2,7 @@ const assert = require("node:assert/strict"),
   path = require("node:path");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 (async () => {
-  const b = await chromium.connectOverCDP("http://127.0.0.1:9223"),
+  const b = await chromium.connectOverCDP(`http://127.0.0.1:${process.env.SHIQIAN_CDP_PORT || "9223"}`),
     p = b
       .contexts()[0]
       .pages()
@@ -19,7 +19,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       .resolve(boot.dataPath)
       .startsWith(path.join(path.resolve(__dirname, ".."), "qa") + path.sep),
   );
-  assert.equal(boot.version, "0.3.0-beta.1");
+  assert.equal(boot.version, process.env.BETA_VERSION || "0.3.0-beta.1");
   const ids = (await api("query", { limit: 100 })).files.map((f) => f.id);
   assert.ok(ids.length > 0);
   const cdp = await p.context().newCDPSession(p);

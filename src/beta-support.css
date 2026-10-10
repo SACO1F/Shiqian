@@ -1,0 +1,101 @@
+.task-panel section {
+  margin-bottom: 22px;
+}
+.task-panel h3 {
+  font-size: 13px;
+  margin: 0 0 10px;
+}
+.task-panel .modal-content {
+  padding: 0;
+}
+.task-progress {
+  display: grid;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+}
+.task-progress > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.task-progress progress {
+  width: 100%;
+  height: 6px;
+  border: 0;
+  border-radius: 10px;
+  accent-color: var(--accent);
+  overflow: hidden;
+}
+.task-progress progress::-webkit-progress-bar {
+  background: var(--hover);
+  border-radius: 10px;
+}
+.task-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 10px;
+  transition: width 0.2s ease;
+}
+.task-progress small {
+  color: var(--muted);
+}
+.task-record {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+.task-record > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.task-record > div small {
+  margin-left: auto;
+  color: var(--muted);
+}
+.task-record p {
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.statusbar .task-entry,
+.statusbar .recovery-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: var(--ink);
+}
+.statusbar .task-entry:hover,
+.statusbar .recovery-entry:hover {
+  background: var(--hover);
+}
+.statusbar > span:first-of-type {
+  flex: 1;
+}
+.statusbar .recovery-entry {
+  color: var(--danger);
+}
+.diagnostic-panel pre {
+  padding: 15px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--hover);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  max-height: 310px;
+  overflow: auto;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.transfer-working {
+  flex-wrap: wrap;
+}
+.transfer-working > .task-progress {
+  flex: 1 0 100%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-progress progress::-webkit-progress-value {
+    transition: none;
+  }
+}

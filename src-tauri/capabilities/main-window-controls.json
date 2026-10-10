@@ -1,0 +1,12 @@
+{
+  "identifier": "main-window-controls",
+  "description": "Custom main titlebar window actions and edge resizing",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-resize-dragging"
+  ]
+}

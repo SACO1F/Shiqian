@@ -16,6 +16,14 @@ pub fn open(app: &tauri::AppHandle, state: &AppState) -> Result<Value> {
         .clamp(320., 1000.);
     let topmost = settings["floatingAlwaysOnTop"].as_bool().unwrap_or(true);
     if let Some(w) = app.get_webview_window("floating") {
+        let position = w.outer_position().ok().map(|p| (p.x, p.y));
+        let current = options(app)?;
+        place(
+            &w,
+            position,
+            current["width"].as_f64().unwrap_or(width),
+            current["height"].as_f64().unwrap_or(height),
+        )?;
         w.show().map_err(|e| err("WINDOW_ERROR", e))?;
         w.set_focus().map_err(|e| err("WINDOW_ERROR", e))?;
     } else {
@@ -43,54 +51,119 @@ pub fn open(app: &tauri::AppHandle, state: &AppState) -> Result<Value> {
             _ => None,
         })
         .skip_taskbar(true)
-        .focused(true);
+        .visible(false)
+        .focused(false);
         if std::env::var_os("SHIQIAN_DATA_DIR").is_some() {
             builder = builder.data_directory(state.store()?.root.join("webview"));
         }
         let w = builder.build().map_err(|e| err("WINDOW_ERROR", e))?;
-        remember_size(&w, state);
-        if let Ok(Some(m)) = w.current_monitor() {
-            let area = m.work_area();
-            let scale = m.scale_factor();
-            let fitted_height = height.min((area.size.height as f64 / scale - 80.).max(320.));
-            let _ = w.set_size(tauri::LogicalSize::new(width, fitted_height));
-            let x = area.position.x + area.size.width as i32 - ((width + 24.) * scale) as i32;
-            let y = area.position.y + (60. * scale) as i32;
-            let _ = w.set_position(tauri::PhysicalPosition::new(x, y));
-        }
+        let position = settings["floatingPosition"]["x"]
+            .as_i64()
+            .zip(settings["floatingPosition"]["y"].as_i64())
+            .and_then(|(x, y)| Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?)));
+        place(&w, position, width, height)?;
+        w.show().map_err(|e| err("WINDOW_ERROR", e))?;
+        // Windows recalculates the undecorated client frame on first show.
+        // Reapply the requested client size before watching/persisting geometry.
+        place(&w, position, width, height)?;
+        w.set_focus().map_err(|e| err("WINDOW_ERROR", e))?;
+        remember_geometry(&w, state);
     }
     let _ = app.emit("library-changed", ());
     Ok(json_ok())
 }
 
-fn remember_size(window: &tauri::WebviewWindow, state: &AppState) {
+fn place(
+    window: &tauri::WebviewWindow,
+    position: Option<(i32, i32)>,
+    width: f64,
+    height: f64,
+) -> Result<()> {
+    let mut monitors = window
+        .available_monitors()
+        .map_err(|e| err("WINDOW_ERROR", e))?;
+    if let Ok(Some(primary)) = window.primary_monitor() {
+        monitors.sort_by_key(|m| m.position() != primary.position());
+    }
+    let areas: Vec<_> = monitors
+        .iter()
+        .map(|m| {
+            let a = m.work_area();
+            crate::window_geometry::Area {
+                x: a.position.x,
+                y: a.position.y,
+                width: a.size.width,
+                height: a.size.height,
+                scale: m.scale_factor(),
+            }
+        })
+        .collect();
+    if let Some(p) = crate::window_geometry::fit(&areas, position, width, height) {
+        window
+            .set_position(tauri::PhysicalPosition::new(p.x, p.y))
+            .map_err(|e| err("WINDOW_ERROR", e))?;
+        window
+            .set_size(tauri::LogicalSize::new(p.width, p.height))
+            .map_err(|e| err("WINDOW_ERROR", e))?;
+    }
+    Ok(())
+}
+fn geometry(window: &tauri::WebviewWindow) -> Option<Value> {
+    let scale = window.scale_factor().ok()?;
+    let size = window.inner_size().ok()?.to_logical::<f64>(scale);
+    let point = window.outer_position().ok()?;
+    Some(
+        json!({"position":{"x":point.x,"y":point.y},"size":{"width":size.width.round() as u32,"height":size.height.round() as u32}}),
+    )
+}
+fn persist_geometry(state: &AppState, value: &Value) {
+    if let Ok(mut store) = state.store() {
+        let _ = store.save_settings(&json!({"key":"floatingPosition","value":value["position"]}));
+        // Compact/minimized events must not overwrite the last expanded size.
+        if value["size"]["height"].as_u64().is_some_and(|h| h >= 320) {
+            let _ = store.save_settings(&json!({"key":"floatingSize","value":value["size"]}));
+        }
+    }
+}
+pub fn save_geometry(app: &tauri::AppHandle, state: &AppState) {
+    if let Some(window) = app.get_webview_window("floating") {
+        if let Some(value) = geometry(&window) {
+            persist_geometry(state, &value);
+        }
+    }
+}
+fn remember_geometry(window: &tauri::WebviewWindow, state: &AppState) {
     let (sender, receiver) = mpsc::channel();
     let watched = window.clone();
     window.on_window_event(move |event| {
-        if let tauri::WindowEvent::Resized(size) = event {
-            if let Ok(scale) = watched.scale_factor() {
-                let logical = size.to_logical::<f64>(scale);
-                let _ = sender.send((logical.width.round() as u32, logical.height.round() as u32));
+        if matches!(
+            event,
+            tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            if let Some(value) = geometry(&watched) {
+                let _ = sender.send(value);
             }
         }
     });
     let state = state.clone();
-    // One worker debounces native resize events, avoiding a database write per frame.
     std::thread::spawn(move || {
-        while let Ok(mut size) = receiver.recv() {
+        while let Ok(mut value) = receiver.recv() {
+            let mut disconnected = false;
             loop {
                 match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
-                    Ok(next) => size = next,
+                    Ok(next) => value = next,
                     Err(mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        disconnected = true;
+                        break;
+                    }
                 }
             }
-            if size.1 >= 320 {
-                if let Ok(mut store) = state.store() {
-                    let _ = store.save_settings(
-                        &json!({"key":"floatingSize","value":{"width":size.0,"height":size.1}}),
-                    );
-                }
+            persist_geometry(&state, &value);
+            if disconnected {
+                break;
             }
         }
     });
@@ -105,8 +178,11 @@ pub fn options(app: &tauri::AppHandle) -> Result<Value> {
         .inner_size()
         .map_err(|e| err("WINDOW_ERROR", e))?
         .to_logical::<f64>(scale);
+    let position = window
+        .outer_position()
+        .map_err(|e| err("WINDOW_ERROR", e))?;
     Ok(
-        json!({"width":size.width,"height":size.height,"collapsed":size.height<100.,"alwaysOnTop":window.is_always_on_top().map_err(|e| err("WINDOW_ERROR",e))?,"resizable":window.is_resizable().map_err(|e| err("WINDOW_ERROR",e))?}),
+        json!({"x":position.x,"y":position.y,"width":size.width,"height":size.height,"collapsed":size.height<100.,"alwaysOnTop":window.is_always_on_top().map_err(|e| err("WINDOW_ERROR",e))?,"resizable":window.is_resizable().map_err(|e| err("WINDOW_ERROR",e))?}),
     )
 }
 
@@ -136,6 +212,14 @@ pub fn resize(app: &tauri::AppHandle, state: &AppState, collapsed: bool) -> Resu
             if collapsed { 64. } else { height },
         ))
         .map_err(|e| err("WINDOW_ERROR", e))?;
+    let position = window.outer_position().ok().map(|p| (p.x, p.y));
+    place(
+        &window,
+        position,
+        width,
+        if collapsed { 64. } else { height },
+    )?;
+    save_geometry(app, state);
     Ok(json_ok())
 }
 
@@ -174,6 +258,7 @@ pub fn main_show(app: &tauri::AppHandle) -> Result<Value> {
     Ok(json_ok())
 }
 pub fn close(app: &tauri::AppHandle, state: &AppState) -> Result<Value> {
+    save_geometry(app, state);
     state.drag_cancel.store(true, Ordering::Relaxed);
     if let Some(main) = app.get_webview_window("main") {
         if !main.is_visible().unwrap_or(false) {

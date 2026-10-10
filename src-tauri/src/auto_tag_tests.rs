@@ -1025,3 +1025,67 @@ fn scoped_ai_cancel_validates_whole_batch_before_changing_jobs() {
     );
     assert_eq!(f.store.cancel_ai_files(&[file.id]).unwrap()["cancelled"], 0);
 }
+
+#[test]
+fn workspace_manual_tags_pin_once_preserve_existing_shortcuts_and_survive_restart() {
+    let mut f = Fixture::new();
+    let file = f.add("workspace.txt", "text", b"synthetic");
+    let keep = f.store.create_tag("保留快捷标签").unwrap();
+    f.store.save_floating_presets(&[keep.id.clone()]).unwrap();
+    let new = f.store.create_workspace_tag("工作台新建").unwrap();
+    assert_eq!(
+        f.store.floating_presets().unwrap()["ids"],
+        json!([keep.id, new.id])
+    );
+    let reused = f.store.create_workspace_tag("工作台新建").unwrap();
+    assert_eq!(reused.id, new.id);
+    let existing = f.store.create_tag("既有普通标签").unwrap();
+    f.patch(&file.id, vec![existing.id.clone()], vec![]);
+    f.patch(&file.id, vec![existing.id.clone()], vec![]);
+    let expected = json!([keep.id, new.id, existing.id]);
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], expected);
+    let folder = f
+        .store
+        .file(&file.id)
+        .unwrap()
+        .tags
+        .into_iter()
+        .find(|t| t.created_by == "folder")
+        .unwrap();
+    f.patch(&file.id, vec![folder.id.clone()], vec![]);
+    f.store.create_workspace_tag(&folder.name).unwrap();
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], expected);
+    let root = f.store.root.clone();
+    drop(f.store);
+    let mut reopened = Store::open(&root).unwrap();
+    assert_eq!(reopened.floating_presets().unwrap()["ids"], expected);
+}
+
+#[test]
+fn workspace_failed_annotation_does_not_pin_and_explicit_ai_acceptance_does() {
+    let mut f = Fixture::new();
+    let file = f.add("workspace-ai.txt", "text", b"synthetic");
+    let keep = f.store.create_tag("原快捷标签").unwrap();
+    f.store.save_floating_presets(&[keep.id.clone()]).unwrap();
+    let rejected = f.store.create_tag("失败操作标签").unwrap();
+    assert!(f.store.mutate("files.tags", &json!({"ids":[file.id],"versions":{file.id.clone():file.version-1},"add":[rejected.id],"remove":[]})).is_err());
+    assert_eq!(f.store.floating_presets().unwrap()["ids"], json!([keep.id]));
+    f.apply(&file.id, &["AI 待确认标签"]);
+    let pending = f
+        .store
+        .file(&file.id)
+        .unwrap()
+        .tags
+        .into_iter()
+        .find(|t| t.source == "ai")
+        .unwrap();
+    assert!(!f.store.floating_presets().unwrap()["ids"]
+        .as_array()
+        .unwrap()
+        .contains(&json!(pending.id)));
+    f.patch(&file.id, vec![pending.id.clone()], vec![]);
+    assert_eq!(
+        f.store.floating_presets().unwrap()["ids"],
+        json!([keep.id, pending.id])
+    );
+}

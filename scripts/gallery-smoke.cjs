@@ -1,3 +1,4 @@
+const { chooseSelect } = require("./select-control.cjs");
 const { getSearch } = require("./search-control.cjs");
 // Real Tauri WebView, real IPC and isolated QA data only.
 const assert = require("node:assert/strict");
@@ -247,7 +248,7 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   await search.fill("");
   await page.getByLabel("切换详情面板", { exact: true }).click();
   await page.getByRole("slider", { name: "瀑布流列数" }).fill("4");
-  await page.getByLabel("文件排序", { exact: true }).selectOption("size");
+  await chooseSelect(page, "文件排序", "文件大小");
   await page.mouse.move(650, 30);
   await pause(900);
   await page.screenshot({

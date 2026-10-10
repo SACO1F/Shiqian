@@ -171,6 +171,10 @@ export function MasonryGallery({
     gap,
     overscan: columns * 2,
   });
+  // Width transitions remeasure many cards above the viewport. Automatic
+  // per-card scroll compensation accumulates across open/close cycles.
+  // Keep the user-controlled offset while the masonry geometry is rebuilt.
+  virtual.shouldAdjustScrollPositionOnItemSizeChange = () => false;
   const onSizeChange = useCallback(
     (index: number, height: number) => {
       measurements.current.set(previewKey(files[index]), {

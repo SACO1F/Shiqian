@@ -129,6 +129,8 @@ pub struct ImportJob {
     pub skipped: usize,
     pub failed: usize,
     pub errors: Vec<String>,
+    #[serde(default)]
+    pub failed_paths: Vec<String>,
     pub done: bool,
     pub cancelled: bool,
 }

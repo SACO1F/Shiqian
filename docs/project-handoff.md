@@ -1,6 +1,10 @@
 # 项目打包与 GitHub 仓库说明
 
-首次整理：2026-10-02。最新更新：2026-10-10，v0.3.0-beta.1。主开发副本继续位于 `D:\AI\Shiqian`，源码在 GitHub 主分支，安装包在预发布页面；下方 v0.2 章节保留为历史交付说明。
+首次整理：2026-10-02。最新更新：2026-10-10，v0.3.0-beta.9 源码与候选交付。主开发副本位于 `D:\AI\Shiqian`，源码同步到 GitHub main；Beta.1 历史发布保留不变。下方 v0.2 章节保留为历史交付说明。
+
+## v0.3.0-beta.9 交付
+
+本次同步包含 Beta.2 至 Beta.9 的源码、测试脚本、合成资料测试证据与文档。候选安装包、独立 EXE、源码 ZIP、指南、验收说明和 SHA-256 清单发布到 [Beta.9 预发布](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)，本地副本在 `releases/v0.3.0-beta.9/`。使用见 [Beta.9 说明](beta-v0.3-beta9.md)，边界见 [验收记录](validation-v0.3-beta9.md)。
 
 ## 本地开发位置
 
@@ -62,3 +66,9 @@ v0.2.0 以预发布形式归档，保留原测试范围说明；上传附件不�
 ## v0.2.2 更新
 
 瀑布流重叠及列数按钮修复版位于 `releases/v0.2.2/`，说明见 [修复指南](gallery-v0.2.2.md)。当前完整本地归档包含 v0.2.0～v0.2.2 历史交付。正式资料库沿用原位置，本次没有数据迁移。
+
+## Beta.3 稳定候选（2026-10-10）
+
+主项目 `D:\AI\Shiqian` 已进入 v0.3.0-beta.3。浮窗位置保存／工作区校正、原生任务退出保护、发布版本检查已实现。候选使用 [指南](beta-v0.3-beta3.md)、[更新说明](release-notes-v0.3-beta3.md) 和 [验收记录](validation-v0.3-beta3.md)。
+
+运行环境验收按 [实机检查表](beta3-real-device-checklist.md) 记录；跨设备、安装器覆盖升级、混合 DPI 与全天使用尚未完成。此轮不自动发布 GitHub。后续路线见 [开发计划](development-plan-after-beta2-2026-10-10.md)。

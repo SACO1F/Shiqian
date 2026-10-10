@@ -94,8 +94,37 @@ export interface ImportJob {
   skipped: number;
   failed: number;
   errors: string[];
+  failedPaths: string[];
   done: boolean;
   cancelled: boolean;
+}
+export interface TransferTask {
+  id: string;
+  kind: string;
+  state: "running" | "done" | "failed" | "cancelled";
+  startedAt: number;
+  finishedAt?: number;
+  error?: string;
+  result?: { path?: string; fileCount?: number; notice?: string };
+}
+export interface TransferStatus {
+  busy: boolean;
+  phase: string;
+  bytes: number;
+  totalBytes: number;
+  completed: number;
+  fileTotal: number;
+  task?: TransferTask;
+  history: TransferTask[];
+}
+export interface TaskSnapshot {
+  transfer: TransferStatus;
+  import?: ImportJob;
+  ai: Record<string, number>;
+}
+export interface SupportSnapshot {
+  lastBackup?: { createdAt: number; kind: string; path: string };
+  notice: string;
 }
 export function api<T = Record<string, unknown>>(
   action: string,

@@ -87,8 +87,8 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     const status = await api("package.status");
     if (
       status.busy &&
-      status.phase === "复制并导入" &&
-      status.bytes > 1024 ** 3
+      (status.phase === "复制文件" || status.phase === "复制并导入") &&
+      status.bytes > (status.phase === "复制文件" ? 0 : 1024 ** 3)
     )
       break;
     await p.waitForTimeout(5);

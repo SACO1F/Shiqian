@@ -282,14 +282,14 @@
 :root {
   --tag-action-fill: linear-gradient(145deg, #ffffffa3, #e6f2e67a);
   --tag-action-hover: linear-gradient(145deg, #ffffffbd, #e6f2e694);
-  --tag-action-edge: #ffffffad;
+  --tag-action-edge: transparent;
   --tag-action-highlight: #ffffffb3;
   --tag-action-shadow: 0 6px 22px #163c301c;
 }
 :root[data-theme="dark"] {
   --tag-action-fill: linear-gradient(145deg, #385b49a3, #203e327a);
   --tag-action-hover: linear-gradient(145deg, #406550bd, #26473594);
-  --tag-action-edge: #d8efdf40;
+  --tag-action-edge: transparent;
   --tag-action-highlight: #ffffff2e;
   --tag-action-shadow: 0 6px 22px #00000033;
 }
@@ -299,10 +299,7 @@
   background: var(--tag-action-fill);
   color: var(--accent);
   border: 1px solid var(--tag-action-edge);
-  box-shadow:
-    var(--tag-action-shadow),
-    inset 0 1px 0 var(--tag-action-highlight),
-    inset 0 -1px 0 #163c300a;
+  box-shadow: var(--tag-action-shadow);
   backdrop-filter: blur(22px) saturate(150%);
 }
 .app-shell .tag-fab:hover:not(:disabled),

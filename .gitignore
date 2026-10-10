@@ -31,3 +31,5 @@ public/pdf-assets/
 !docs/evidence/*.log
 .build/
 *.dpapi
+__pycache__/
+*.pyc

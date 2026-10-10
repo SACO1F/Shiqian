@@ -4,14 +4,14 @@
   <p><strong>顺手贴上标签，随时找回灵感。</strong></p>
   <p>一个围绕本地文件、多标签与轻量浮窗设计的 Windows 资料整理工具。</p>
   <p>
-    <img alt="版本 0.3.0-beta.1" src="https://img.shields.io/badge/version-0.3.0--beta.1-527565" />
+    <img alt="版本 0.3.0-beta.9" src="https://img.shields.io/badge/version-0.3.0--beta.9-527565" />
     <img alt="Windows 11 x64" src="https://img.shields.io/badge/platform-Windows%2011%20x64-607D8B" />
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8" />
     <img alt="本地资料库" src="https://img.shields.io/badge/data-local%20first-8B7AA8" />
   </p>
   <p>
-    <a href="docs/beta-v0.3-beta1.md">Beta 安装与资料交接</a> ·
-    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.1"><strong>下载 Windows Beta</strong></a> ·
+    <a href="docs/beta-v0.3-beta9.md">Beta.9 体验修复指南</a> ·
+    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9"><strong>Beta.9 下载</strong></a> ·
     <a href="docs/desktop-guide.md">使用与开发指南</a> ·
     <a href="docs/roadmap.md">开发路线</a> ·
     <a href="docs/agent-integration.md">Agent 结合分析</a>
@@ -20,7 +20,7 @@
 
 ---
 
-> **当前版本：v0.3.0-beta.1，供小范围试用。** 原文件、标签、备注与收藏一起交接，校验预览后追加到当前资料库。见 [Beta 下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.1)、[使用说明](docs/beta-v0.3-beta1.md) 和 [验收范围](docs/validation-v0.3-beta1.md)。干净系统、多屏混合 DPI 与全天运行仍待验收。
+> **当前版本：v0.3.0-beta.9，体验修复候选。** 将撤销、刷新和菜单切换移动到最上方自定义标题栏，移除下方多余工具栏，保留窗口控制及此前交互修复。本地交付位于 `releases/v0.3.0-beta.9/`，见 [使用说明](docs/beta-v0.3-beta9.md)、[更新记录](docs/release-notes-v0.3-beta9.md) 和 [验收范围](docs/validation-v0.3-beta9.md)。GitHub 提供 [Beta.9 预发布下载](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)。干净系统、覆盖安装、跨设备、多屏混合 DPI 与全天运行仍待实机验收。
 
 ## 把标签，贴到文件上
 
@@ -51,6 +51,10 @@
 
 ## 目前能做什么
 
+Beta.2 新增后台任务入口，可在资料包校验和复制期间继续搜索、浏览与编辑备注；偏好设置支持诊断报告预览及 Markdown 导出，报告不包含文件名、路径、正文或 AI 配置。
+
+![Beta.3 后台任务与退出保护](docs/images/beta3-tasks-light.png)
+
 | 能力         | 说明                                                                             |
 | ------------ | -------------------------------------------------------------------------------- |
 | 多标签整理   | 悬浮按钮快速新建与批量标注；侧栏直接重命名，同步所有关联文件；支持备注与收藏     |
@@ -69,12 +73,12 @@
 
 ## 开始使用
 
-前往 [v0.3.0-beta.1 下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.1)，或使用本地 `releases/v0.3.0-beta.1/` 的交付文件。
+前往 [v0.3.0-beta.9 下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)，或使用本地 `releases/v0.3.0-beta.9/` 的交付文件。
 
 | 下载                                                                                                                                | 适合谁                                                     |
 | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [Windows x64 安装包](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-beta.1/Shiqian-v0.3.0-beta.1-Windows-x64-setup.exe) | 推荐给日常使用者；按当前用户安装并检查 WebView2 Runtime    |
-| [单独运行的 EXE](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-beta.1/Shiqian-v0.3.0-beta.1-Windows-x64.exe)           | 系统已具备 WebView2 时可直接运行；仍使用用户应用数据目录   |
+| [Windows x64 安装包](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-beta.9/Shiqian-v0.3.0-beta.9-Windows-x64-setup.exe) | 推荐给日常使用者；按当前用户安装并检查 WebView2 Runtime    |
+| [单独运行的 EXE](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-beta.9/Shiqian-v0.3.0-beta.9-Windows-x64.exe)           | 系统已具备 WebView2 时可直接运行；仍使用用户应用数据目录   |
 | 使用说明、验收记录、源码与 SHA256SUMS                                                                                               | 同一下载页提供；源码面向开发者，校验文件用于核对下载完整性 |
 
 安装或升级前退出工作台和标签浮窗，升级前导出标注备份。缺少 WebView2 的电脑可能需要联网完成依赖安装。运行环境就绪后，核心文件整理功能无需联网，也无需账号；可选 AI 功能需要配置模型服务。历史版本保存在 [Releases](https://github.com/SACO1F/Shiqian/releases)。
@@ -105,6 +109,16 @@
 **标注是标签和文字备注，原文件内容不会被修改。** `.sqtagbackup` 包含标注、文件位置和设置，不包含原文件。单文件 EXE 仍使用系统 WebView2 与用户应用数据目录，不是把资料库存放在程序旁边的便携模式。
 
 完整操作、快捷键、文件重新关联和恢复说明见 [桌面指南](docs/desktop-guide.md) 与 [浮窗指南](docs/floating-tags-v0.2.md)。
+
+## 最近更新
+
+- 自定义标题栏：撤销、刷新、侧栏切换放在最上方左侧；窗口控制在右侧。
+- 排序与文件操作同时常驻；全选与取消采用弹性胶囊按钮，图标操作提供悬浮提示。
+- 标签在工作台创建或使用后同步到浮窗；文件夹与待确认 AI 标签保持独立规则。
+- 修复详情反复展开导致滚动上移、标签候选重复／缺失及右侧拖动提示受限。
+- 补齐后台任务、诊断导出、资料包取消与恢复保护，以及浮窗位置和尺寸恢复。
+
+![Beta.9 自定义标题栏](docs/images/beta9-titlebar.png)
 
 ## 本地开发
 
@@ -159,7 +173,9 @@ Shiqian/
 | 浏览器协同                                 | 已有设计文档，尚无扩展实现                     |
 | Agent 只读检索与整理建议                   | 已完成接入分析，尚无接口实现                   |
 
-Beta 核心测试 **83 项通过**，无 WebView 专项 **43 项通过**，两组有重叠；最终构建通过 **10 组 AI、6 组标签与浮窗、35 个布局场景、7 组动效回归**。升级、旧备份恢复、两份独立资料库收发、中文长路径及 **1 GB** 任务取消通过。
+最近一次后端核心回归在 Beta.6 完成：**94 项通过、0 失败、2 项可选压力测试忽略**。Beta.9 的生产桌面回归覆盖自定义标题栏窗口控制、常驻工具栏、全选／取消、浅深色提示、标签候选及四处选择器；详情连续开关 12 轮，滚动位置不变。见 [Beta.9 验收记录](docs/validation-v0.3-beta9.md)。物理拖动／边缘缩放、混合 DPI 和安装器覆盖升级仍需实机补齐。
+
+Beta.1 历史核心测试 **83 项通过**，无 WebView 专项 **43 项通过**，两组有重叠；最终构建通过 **10 组 AI、6 组标签与浮窗、35 个布局场景、7 组动效回归**。升级、旧备份恢复、两份独立资料库收发、中文长路径及 **1 GB** 任务取消通过。
 
 本机 10,000 条文件记录、30,000 个标签关联的组合查询 P95 约 **137 ms**；3 分钟持续操作完成 **964 轮**。这些是合成资料与隔离资料库的验证，两份本机资料库不等于不同实体电脑验收，短时操作不替代全天运行。完整范围见 [Beta 验收记录](docs/validation-v0.3-beta1.md)。
 

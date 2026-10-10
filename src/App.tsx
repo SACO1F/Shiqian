@@ -1,4 +1,9 @@
+import { WarmTooltip } from "./WarmTooltip";
+import { WindowControls } from "./WindowControls";
+import { GlideSelect } from "./GlideSelect";
 import { TransferDialog } from "./TransferDialog";
+import { TaskPanel, useTasks } from "./TaskPanel";
+import { DiagnosticPanel } from "./SupportPanel";
 import {
   useCallback,
   useEffect,
@@ -31,6 +36,7 @@ import {
   Undo2,
   RefreshCw,
   Trash2,
+  PackageOpen,
   LoaderCircle,
   Check,
   ArrowDownUp,
@@ -168,6 +174,7 @@ export default function App() {
   const [quick, setQuick] = useState<LocalFile>();
   const [dragging, setDragging] = useState(false);
   const [job, setJob] = useState<ImportJob>();
+  const tasks = useTasks();
   const [, redraw] = useState(0);
   const drafts = useRef<NoteDrafts | undefined>(undefined);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
@@ -399,6 +406,12 @@ export default function App() {
       }),
     );
     unlisteners.push(
+      listen("exit-blocked", () => {
+        setModal("tasks");
+        tell("后台任务尚未结束，请等待完成，或取消后退出");
+      }),
+    );
+    unlisteners.push(
       listen("library-changed", () => {
         clearTimeout(timer);
         timer = setTimeout(
@@ -426,6 +439,12 @@ export default function App() {
         try {
           await flush();
           await settingsWrites.current;
+          const packageTask = await api<{ busy: boolean }>("package.status");
+          if (packageTask.busy) {
+            setModal("tasks");
+            tell("后台任务尚未结束，请等待完成，或在任务面板取消后退出");
+            return;
+          }
           const active = await api<ImportJob | null>("import.status");
           if (active && !active.done) {
             if (
@@ -437,11 +456,22 @@ export default function App() {
             )
               return;
             await api("import.cancel");
+            for (let attempt = 0; attempt < 100; attempt++) {
+              const pending = await api<ImportJob | null>("import.status");
+              if (!pending || pending.done) break;
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
           }
           closeAllowed.current = true;
           await api("main.close");
           closeAllowed.current = false;
         } catch (error) {
+          closeAllowed.current = false;
+          if (/^(TRANSFER_BUSY|IMPORT_BUSY):/.test(String(error))) {
+            setModal("tasks");
+            tell(message(error), true);
+            return;
+          }
           tell(`备注尚未保存：${message(error)}`, true);
           if (
             await ask(
@@ -596,8 +626,11 @@ export default function App() {
         filters: [{ name: "拾签标注备份", extensions: ["sqtagbackup"] }],
       });
       if (path) {
-        await api("backup.export", { path });
-        tell("标注备份已导出");
+        const result = await api<{ notice?: string }>("backup.export", {
+          path,
+        });
+        await reload();
+        tell(result.notice || "标注备份已导出");
       }
     });
   const restore = () =>
@@ -667,9 +700,54 @@ export default function App() {
         ? old.includes(f.id)
           ? old.filter((x) => x !== f.id)
           : [...old, f.id]
-        : [f.id];
+        : old.length === 1 && old[0] === f.id
+          ? []
+          : [f.id];
     });
   };
+  const selectAllResults = () =>
+    run(async () => {
+      if (results.total > 1000) {
+        tell("批量标注每次最多支持 1,000 个文件，请缩小筛选范围后全选", true);
+        return;
+      }
+      await flush();
+      const snapshot = queryRef.current;
+      const token = ++request.current;
+      loadLock.current = true;
+      try {
+        const files: LocalFile[] = [];
+        let page: Results;
+        do {
+          page = await api<Results>("query", {
+            ...snapshot,
+            offset: files.length,
+            limit: 100,
+          });
+          if (
+            token !== request.current ||
+            JSON.stringify(snapshot) !== JSON.stringify(queryRef.current)
+          )
+            return;
+          if (!page.files.length && page.hasMore)
+            throw new Error("文件列表已变化，请重新全选");
+          files.push(...page.files);
+          if (files.length > 1000)
+            throw new Error(
+              "文件列表已变化，结果超过 1,000 项，请缩小筛选范围",
+            );
+        } while (page.hasMore);
+        const unique = [
+          ...new Map(files.map((file) => [file.id, file])).values(),
+        ];
+        setResults({ ...page, offset: 0, files: unique, hasMore: false });
+        setRetainedDetail(undefined);
+        setSelected(unique.map((file) => file.id));
+        anchor.current = unique[0]?.id || "";
+      } finally {
+        if (token === request.current) loadLock.current = false;
+      }
+    });
   const tagFilter = (id: string, exclude = false) =>
     setQuery((q) => {
       const field = exclude ? "exclude" : "include",
@@ -808,6 +886,71 @@ export default function App() {
       data-busy={busy}
     >
       <TagDropFeedback tags={boot.tags} run={run} onNotify={tell} />
+      <header className="topbar app-topbar">
+        <div className="top-leading-actions">
+          <button
+            className="icon-button"
+            title={
+              boot.undoLabel
+                ? `撤销：${boot.undoLabel} (Ctrl+Z)`
+                : "没有可撤销的操作"
+            }
+            aria-label="撤销上一步"
+            disabled={!boot.undoLabel || busy}
+            onClick={undo}
+          >
+            <Undo2 size={17} />
+          </button>
+          <button
+            className="icon-button"
+            aria-label="刷新文件状态"
+            title="重新检查原文件状态"
+            disabled={busy}
+            onClick={() =>
+              run(async () => {
+                clearPreviews();
+                await api("refresh");
+              }, "正在检查文件位置与状态")
+            }
+          >
+            <RefreshCw size={16} />
+          </button>
+          <button
+            className="icon-button sidebar-toggle"
+            aria-label={sidebarCollapsed ? "展开左侧菜单" : "收拢左侧菜单"}
+            title={sidebarCollapsed ? "展开左侧菜单" : "收拢左侧菜单"}
+            aria-expanded={!sidebarCollapsed}
+            aria-controls="workspace-sidebar"
+            onClick={toggleSidebar}
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen size={19} />
+            ) : (
+              <PanelLeftClose size={19} />
+            )}
+          </button>
+        </div>
+        <div
+          className="window-drag-region"
+          aria-label="拖动窗口"
+          onMouseDown={(event) => {
+            if (event.button === 0 && event.detail === 1)
+              void getCurrentWebviewWindow()
+                .startDragging()
+                .catch((error) => tell(message(error), true));
+          }}
+          onDoubleClick={() =>
+            void getCurrentWebviewWindow()
+              .toggleMaximize()
+              .catch((error) => tell(message(error), true))
+          }
+        >
+          <span className="local-badge">
+            <span /> 本地资料库
+          </span>
+        </div>
+        <WindowControls onError={(text) => tell(text, true)} />
+      </header>
       <aside className="sidebar" id="workspace-sidebar" aria-label="工作台导航">
         <SidebarResizeHandle
           width={sidebarSize}
@@ -965,56 +1108,6 @@ export default function App() {
         </div>
       </aside>
       <main className="workspace">
-        <header className="topbar">
-          <button
-            className="icon-button sidebar-toggle"
-            aria-label={sidebarCollapsed ? "展开左侧菜单" : "收拢左侧菜单"}
-            title={sidebarCollapsed ? "展开左侧菜单" : "收拢左侧菜单"}
-            aria-expanded={!sidebarCollapsed}
-            aria-controls="workspace-sidebar"
-            onClick={toggleSidebar}
-          >
-            {sidebarCollapsed ? (
-              <PanelLeftOpen size={19} />
-            ) : (
-              <PanelLeftClose size={19} />
-            )}
-          </button>
-          <div className="breadcrumb">工作台</div>
-          <div className="top-actions">
-            <button
-              className="icon-button"
-              title={
-                boot.undoLabel
-                  ? `撤销：${boot.undoLabel} (Ctrl+Z)`
-                  : "没有可撤销的操作"
-              }
-              aria-label="撤销上一步"
-              disabled={!boot.undoLabel || busy}
-              onClick={undo}
-            >
-              <Undo2 size={17} />
-            </button>
-            <button
-              className="icon-button"
-              aria-label="刷新文件状态"
-              title="重新检查原文件状态"
-              disabled={busy}
-              onClick={() =>
-                run(async () => {
-                  clearPreviews();
-                  await api("refresh");
-                }, "正在检查文件位置与状态")
-              }
-            >
-              <RefreshCw size={16} />
-            </button>
-            <div className="top-divider" />
-            <span className="local-badge">
-              <span /> 本地资料库
-            </span>
-          </div>
-        </header>
         <section className="page-heading">
           <div className="page-title-group">
             <h1>
@@ -1138,31 +1231,34 @@ export default function App() {
             role="group"
             aria-label="文件布局"
           >
-            <button
-              className="icon-button"
-              aria-label="瀑布流视图"
-              title="瀑布流视图"
-              aria-pressed={view === "grid"}
-              onClick={() => {
-                const v = { ...views, [query.scope]: "grid" };
-                setViews(v);
-                setSetting("views", v);
-              }}
-            >
-              <LayoutGrid size={17} />
-            </button>
-            <button
-              className="icon-button"
-              aria-label="列表视图"
-              aria-pressed={view === "list"}
-              onClick={() => {
-                const v = { ...views, [query.scope]: "list" };
-                setViews(v);
-                setSetting("views", v);
-              }}
-            >
-              <List size={18} />
-            </button>
+            <WarmTooltip text="瀑布流视图">
+              <button
+                className="icon-button"
+                aria-label="瀑布流视图"
+                aria-pressed={view === "grid"}
+                onClick={() => {
+                  const v = { ...views, [query.scope]: "grid" };
+                  setViews(v);
+                  setSetting("views", v);
+                }}
+              >
+                <LayoutGrid size={17} />
+              </button>
+            </WarmTooltip>
+            <WarmTooltip text="列表视图">
+              <button
+                className="icon-button"
+                aria-label="列表视图"
+                aria-pressed={view === "list"}
+                onClick={() => {
+                  const v = { ...views, [query.scope]: "list" };
+                  setViews(v);
+                  setSetting("views", v);
+                }}
+              >
+                <List size={18} />
+              </button>
+            </WarmTooltip>
           </div>
           <button
             className="icon-button detail-toggle"
@@ -1206,32 +1302,32 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <select
-                  aria-label="文件状态筛选"
+                <GlideSelect
+                  ariaLabel="文件状态筛选"
                   value={query.status}
-                  onChange={(e) =>
-                    setQuery((q) => ({ ...q, status: e.target.value }))
+                  onChange={(value) =>
+                    setQuery((q) => ({ ...q, status: value }))
                   }
-                >
-                  <option value="">全部状态</option>
-                  <option value="available">可用</option>
-                  <option value="missing">文件缺失</option>
-                  <option value="offline">存储离线</option>
-                  <option value="inaccessible">访问异常</option>
-                </select>
+                  options={[
+                    { value: "", label: "全部状态" },
+                    { value: "available", label: "可用" },
+                    { value: "missing", label: "文件缺失" },
+                    { value: "offline", label: "存储离线" },
+                    { value: "inaccessible", label: "访问异常" },
+                  ]}
+                />
               </div>
               <div className="filter-line">
                 <strong>标签条件</strong>
-                <select
-                  aria-label="标签匹配方式"
+                <GlideSelect
+                  ariaLabel="标签匹配方式"
                   value={query.mode}
-                  onChange={(e) =>
-                    setQuery((q) => ({ ...q, mode: e.target.value }))
-                  }
-                >
-                  <option value="all">满足全部标签</option>
-                  <option value="any">满足任一标签</option>
-                </select>
+                  onChange={(value) => setQuery((q) => ({ ...q, mode: value }))}
+                  options={[
+                    { value: "all", label: "满足全部标签" },
+                    { value: "any", label: "满足任一标签" },
+                  ]}
+                />
                 <input
                   className="filter-tag-search"
                   aria-label="查找筛选标签"
@@ -1372,9 +1468,25 @@ export default function App() {
             {selected.length
               ? `已选 ${selected.length} 项`
               : `${results.total} 份文件`}
-            {selected.length > 0 && (
-              <button onClick={() => setSelected([])}>取消选择</button>
-            )}
+            <div className="jelly-selection" role="group" aria-label="结果选择">
+              <button
+                aria-label="全选当前结果"
+                aria-pressed={
+                  results.total > 0 && selected.length === results.total
+                }
+                disabled={busy || loading || results.total === 0}
+                onClick={selectAllResults}
+              >
+                全选结果
+              </button>
+              <button
+                aria-pressed={selected.length === 0}
+                disabled={busy || selected.length === 0}
+                onClick={() => setSelected([])}
+              >
+                取消选择
+              </button>
+            </div>
           </div>
           {view === "grid" && (
             <div
@@ -1413,53 +1525,20 @@ export default function App() {
               <output aria-live="polite">{visibleColumns} 列</output>
             </div>
           )}
-          {selected.length > 0 ? (
-            <div className="selection-actions">
-              <button
-                disabled={busy}
-                onClick={() =>
-                  run(() =>
-                    updateFiles("files.favorite", {
-                      value: !selectedFiles.every((f) => f.favorite),
-                    }),
-                  )
-                }
-              >
-                <Star size={14} />
-                {selectedFiles.every((f) => f.favorite) ? "取消收藏" : "收藏"}
-              </button>
-              <button
-                disabled={busy}
-                onClick={() => {
-                  void run(async () => {
-                    await flush();
-                    setTransferIds(selectedFiles.map((f) => f.id));
-                    setTransferMode("export");
-                  });
-                }}
-              >
-                导出资料包
-              </button>
-              <button disabled={busy} onClick={remove}>
-                <Trash2 size={14} />
-                移除
-              </button>
-            </div>
-          ) : (
+          <div className="file-tools">
             <div className="sort-control">
               <ArrowDownUp size={13} />
-              <select
-                aria-label="文件排序"
+              <GlideSelect
+                ariaLabel="文件排序"
                 value={query.sort}
-                onChange={(e) =>
-                  setQuery((q) => ({ ...q, sort: e.target.value }))
-                }
-              >
-                <option value="added">加入时间</option>
-                <option value="modified">修改时间</option>
-                <option value="name">名称</option>
-                <option value="size">文件大小</option>
-              </select>
+                onChange={(value) => setQuery((q) => ({ ...q, sort: value }))}
+                options={[
+                  { value: "added", label: "加入时间" },
+                  { value: "modified", label: "修改时间" },
+                  { value: "name", label: "名称" },
+                  { value: "size", label: "文件大小" },
+                ]}
+              />
               <button
                 aria-label="切换排序方向"
                 onClick={() =>
@@ -1472,7 +1551,68 @@ export default function App() {
                 {query.direction === "asc" ? "升序" : "降序"}
               </button>
             </div>
-          )}
+            <div className="selection-actions">
+              <WarmTooltip
+                text={
+                  selectedFiles.length > 0 &&
+                  selectedFiles.every((f) => f.favorite)
+                    ? "取消收藏"
+                    : "收藏"
+                }
+              >
+                <button
+                  aria-label={
+                    selectedFiles.length > 0 &&
+                    selectedFiles.every((f) => f.favorite)
+                      ? "取消收藏"
+                      : "收藏"
+                  }
+                  disabled={busy || selected.length === 0}
+                  onClick={() =>
+                    run(() =>
+                      updateFiles("files.favorite", {
+                        value: !selectedFiles.every((f) => f.favorite),
+                      }),
+                    )
+                  }
+                >
+                  <Star
+                    size={16}
+                    fill={
+                      selectedFiles.length > 0 &&
+                      selectedFiles.every((f) => f.favorite)
+                        ? "currentColor"
+                        : "none"
+                    }
+                  />
+                </button>
+              </WarmTooltip>
+              <WarmTooltip text="导出资料包">
+                <button
+                  aria-label="导出资料包"
+                  disabled={busy || selected.length === 0}
+                  onClick={() => {
+                    void run(async () => {
+                      await flush();
+                      setTransferIds(selectedFiles.map((f) => f.id));
+                      setTransferMode("export");
+                    });
+                  }}
+                >
+                  <PackageOpen size={16} />
+                </button>
+              </WarmTooltip>
+              <WarmTooltip text="移除">
+                <button
+                  aria-label="移除"
+                  disabled={busy || selected.length === 0}
+                  onClick={remove}
+                >
+                  <Trash2 size={16} />
+                </button>
+              </WarmTooltip>
+            </div>
+          </div>
         </div>
         <div className="content-body">
           <FilesView
@@ -1565,6 +1705,27 @@ export default function App() {
           </div>
         </div>
         <footer className="statusbar">
+          <button
+            className="task-entry"
+            onClick={() => setModal("tasks")}
+            aria-label="查看后台任务"
+          >
+            {tasks?.transfer.busy ? (
+              <LoaderCircle size={13} className="spin" />
+            ) : (
+              <Clock3 size={13} />
+            )}
+            {tasks?.transfer.busy ? tasks.transfer.phase : "任务"}
+            {!!tasks?.ai.failed && <small>{tasks.ai.failed} 失败</small>}
+          </button>
+          {boot.notice && (
+            <button
+              className="recovery-entry"
+              onClick={() => setModal("recovery")}
+            >
+              恢复提示
+            </button>
+          )}
           <span>
             {job && !job.done ? (
               <>
@@ -1727,13 +1888,62 @@ export default function App() {
               }, "预览缓存已清理")
             }
             onData={() => run(() => api("data.reveal"))}
+            onDiagnostics={() => setModal("diagnostics")}
             busy={busy}
           />
         </Modal>
       )}
       {modal === "import" && job && (
         <Modal title="文件加入详情" onClose={() => setModal("")}>
-          <ImportDetails job={job} />
+          <ImportDetails
+            job={job}
+            busy={busy}
+            onRetry={() => void run(() => startImport(job.failedPaths || []))}
+          />
+        </Modal>
+      )}
+      {modal === "tasks" && (
+        <Modal title="后台任务" onClose={() => setModal("")}>
+          <TaskPanel
+            snapshot={tasks}
+            onRetryImport={async (paths) => {
+              await startImport(paths);
+            }}
+          />
+        </Modal>
+      )}
+      {modal === "diagnostics" && (
+        <Modal title="诊断报告" onClose={() => setModal("")}>
+          <DiagnosticPanel />
+        </Modal>
+      )}
+      {modal === "recovery" && (
+        <Modal title="恢复提示" onClose={() => setModal("")}>
+          <div className="modal-content">
+            <p className="confirm-text">{boot.notice}</p>
+            <div className="settings-buttons">
+              <button
+                className="button"
+                onClick={() => void run(() => api("data.reveal"))}
+              >
+                <FolderOpen size={15} />
+                打开数据目录
+              </button>
+              <button
+                className="button primary"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    await api("recovery.dismiss");
+                    await reload();
+                    setModal("");
+                  })
+                }
+              >
+                已了解
+              </button>
+            </div>
+          </div>
         </Modal>
       )}
       {quick && (

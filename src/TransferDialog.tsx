@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Download, Upload, FolderOpen, RefreshCw } from "lucide-react";
-import { api, message, size, Tag } from "./api";
+import { api, message, size, Tag, type TransferStatus } from "./api";
 import { Modal } from "./components";
 import { TaskGlyph } from "./TaskStatus";
+import { TransferProgress } from "./TaskPanel";
 
 type Preview = {
   fingerprint: string;
@@ -44,6 +45,7 @@ export function TransferDialog({
   const [processed, setProcessed] = useState(0);
   const [cancelling, setCancelling] = useState(false);
   const [cancelAvailable, setCancelAvailable] = useState(false);
+  const [status, setStatus] = useState<TransferStatus>();
   const lock = useRef(false);
   const request = useRef(0);
   const isExport = mode === "export";
@@ -67,12 +69,11 @@ export function TransferDialog({
     if (!busy) return;
     let active = true;
     const timer = setInterval(() => {
-      void api<{ phase: string; bytes: number; busy: boolean }>(
-        "package.status",
-      )
+      void api<TransferStatus>("package.status")
         .then((s) => {
           if (active) {
             setPhase(s.phase);
+            setStatus(s);
             setProcessed(s.bytes);
             setCancelAvailable(s.busy);
           }
@@ -126,6 +127,7 @@ export function TransferDialog({
     setError("");
     setCancelling(false);
     setPhase("校验");
+    setStatus(undefined);
     setProcessed(0);
     try {
       setPreview(await api<Preview>("package.inspect", { path }));
@@ -145,6 +147,7 @@ export function TransferDialog({
     setError("");
     setCancelling(false);
     setPhase("准备");
+    setStatus(undefined);
     setProcessed(0);
     try {
       const completed = await api<Result>(
@@ -298,10 +301,16 @@ export function TransferDialog({
             </p>
             {busy ? (
               <div className="transfer-working" role="status">
-                <TaskGlyph status="working" />
-                <span>
-                  {phase} · 已处理 {size(processed)}
-                </span>
+                {status ? (
+                  <TransferProgress status={status} />
+                ) : (
+                  <>
+                    <TaskGlyph status="working" />
+                    <span>
+                      {phase} · 已处理 {size(processed)}
+                    </span>
+                  </>
+                )}
                 <button
                   className="button quiet"
                   disabled={cancelling || !cancelAvailable}
@@ -313,6 +322,9 @@ export function TransferDialog({
                   }}
                 >
                   {cancelling ? "正在取消…" : "取消任务"}
+                </button>
+                <button className="button" onClick={onClose}>
+                  后台运行
                 </button>
               </div>
             ) : (

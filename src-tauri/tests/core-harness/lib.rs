@@ -20,6 +20,13 @@ mod db;
 mod fsops;
 #[path = "../../src/model.rs"]
 mod model;
+#[path = "../../src/support.rs"]
+mod support;
+#[path = "../../src/window_geometry.rs"]
+mod window_geometry;
+#[cfg(test)]
+#[path = "../../src/beta2_tests.rs"]
+mod beta2_tests;
 
 #[path = "../../src/transfer.rs"]
 mod transfer;

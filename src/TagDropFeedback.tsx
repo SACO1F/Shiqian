@@ -31,9 +31,26 @@ export function TagDropFeedback({
   run: (task: () => Promise<unknown>) => Promise<void>;
   onNotify: (text: string, error?: boolean) => void;
 }) {
+  const cursor = useRef<HTMLDivElement>(null);
+  const [cursorSize, setCursorSize] = useState({ width: 0, height: 0 });
   const tagsRef = useRef(tags);
   tagsRef.current = tags;
   const [feedback, setFeedback] = useState<Feedback>();
+  useLayoutEffect(() => {
+    if (!cursor.current) return;
+    const measure = () => {
+      const r = cursor.current!.getBoundingClientRect();
+      setCursorSize((old) =>
+        old.width === r.width && old.height === r.height
+          ? old
+          : { width: r.width, height: r.height },
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(cursor.current);
+    return () => observer.disconnect();
+  }, [feedback?.phase, feedback?.tag]);
   useLayoutEffect(() => {
     if (!feedback?.fileId || feedback.phase === "drag") return;
     const card = document.querySelector<HTMLElement>(
@@ -189,8 +206,24 @@ export function TagDropFeedback({
     ) : (
       <Plus size={16} />
     );
-  const left = Math.max(12, Math.min(feedback.point.x + 20, innerWidth - 260));
-  const top = Math.max(12, Math.min(feedback.point.y + 20, innerHeight - 64));
+  const left = Math.max(
+    8,
+    Math.min(
+      feedback.point.x + 20 + cursorSize.width <= innerWidth - 8
+        ? feedback.point.x + 20
+        : feedback.point.x - cursorSize.width - 20,
+      innerWidth - cursorSize.width - 8,
+    ),
+  );
+  const top = Math.max(
+    8,
+    Math.min(
+      feedback.point.y + 20 + cursorSize.height <= innerHeight - 8
+        ? feedback.point.y + 20
+        : feedback.point.y - cursorSize.height - 20,
+      innerHeight - cursorSize.height - 8,
+    ),
+  );
   return createPortal(
     <div
       className={`tag-drop-feedback phase-${feedback.phase} ${feedback.bounds ? "has-target" : "no-target"}`}
@@ -209,7 +242,7 @@ export function TagDropFeedback({
         </div>
       )}
       {feedback.phase === "drag" && (
-        <div className="tag-drag-cursor" style={{ left, top }}>
+        <div ref={cursor} className="tag-drag-cursor" style={{ left, top }}>
           <TagIcon size={14} />
           <span>{feedback.tag}</span>
           {feedback.bounds ? <Plus size={13} /> : <X size={13} />}
@@ -219,7 +252,7 @@ export function TagDropFeedback({
         {feedback.label}
       </div>
       {!feedback.bounds && feedback.phase !== "drag" && (
-        <div className="tag-drag-cursor" style={{ left, top }}>
+        <div ref={cursor} className="tag-drag-cursor" style={{ left, top }}>
           {icon}
           {feedback.label}
         </div>

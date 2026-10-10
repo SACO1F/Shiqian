@@ -1,3 +1,4 @@
+import { GlideSelect } from "./GlideSelect";
 import {
   useEffect,
   useLayoutEffect,
@@ -54,6 +55,7 @@ import { FileTagsHover } from "./FileTagsHover";
 import { AutoTagSettings } from "./AutoTagSettings";
 import { SelectionCheck, reducedMotion, useTagArrival } from "./microMotion";
 import { AiTaskStatus } from "./TaskStatus";
+import { BackupStatus } from "./SupportPanel";
 
 export function Modal({
   title,
@@ -419,8 +421,10 @@ export function TagPicker({
   onCreate,
   placeholder = "添加标签",
   busy = false,
+  appliedIds = [],
 }: {
   tags: Tag[];
+  appliedIds?: string[];
   onPick: (tag: Tag) => void;
   onCreate: (name: string) => void;
   placeholder?: string;
@@ -436,16 +440,20 @@ export function TagPicker({
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
   }, []);
-  const choices = tags
-    .filter((t) =>
+  const applied = new Set(appliedIds);
+  const choices = tags.filter(
+    (t) =>
+      t.createdBy !== "folder" &&
+      !applied.has(t.id) &&
       t.name.toLocaleLowerCase().includes(text.trim().toLocaleLowerCase()),
-    )
-    .slice(0, 7);
+  );
   const exact = tags.find(
     (t) => t.name.toLocaleLowerCase() === text.trim().toLocaleLowerCase(),
   );
   function submit() {
     if (!text.trim()) return;
+    if (exact && (applied.has(exact.id) || exact.createdBy === "folder"))
+      return;
     if (exact) onPick(exact);
     else onCreate(text.trim());
     setText("");
@@ -762,6 +770,11 @@ export function Inspector({
           </div>
           <TagPicker
             tags={tags}
+            appliedIds={tags
+              .filter((tag) =>
+                files.every((file) => file.tags.some((t) => t.id === tag.id)),
+              )
+              .map((tag) => tag.id)}
             onPick={(t) => onTag(t, true)}
             onCreate={onCreateTag}
             busy={busy}
@@ -1129,6 +1142,7 @@ export function SettingsPanel({
   onPackageImport,
   onClear,
   onData,
+  onDiagnostics,
   busy,
 }: {
   boot: Bootstrap;
@@ -1142,6 +1156,7 @@ export function SettingsPanel({
   onPackageImport: () => void;
   onClear: () => void;
   onData: () => void;
+  onDiagnostics: () => void;
   busy: boolean;
 }) {
   return (
@@ -1178,14 +1193,15 @@ export function SettingsPanel({
             <strong>文件卡片密度</strong>
             <p>调整浏览时的留白</p>
           </div>
-          <select
-            aria-label="文件卡片密度"
+          <GlideSelect
+            ariaLabel="文件卡片密度"
             value={density}
-            onChange={(e) => setDensity(e.target.value)}
-          >
-            <option value="comfortable">舒展</option>
-            <option value="compact">紧凑</option>
-          </select>
+            onChange={setDensity}
+            options={[
+              { value: "comfortable", label: "舒展" },
+              { value: "compact", label: "紧凑" },
+            ]}
+          />
         </div>
       </section>
       <AutoTagSettings
@@ -1221,6 +1237,7 @@ export function SettingsPanel({
           </button>
         </div>
         <p className="subtle">恢复前会自动保存当前库的备份。</p>
+        <BackupStatus refreshKey={boot} />
       </section>
       <section>
         <h3>本地存储</h3>
@@ -1250,11 +1267,22 @@ export function SettingsPanel({
         <span>拾签 {boot.version}</span>
         <span>本地优先 · 无需账号</span>
       </div>
+      <button className="button quiet" onClick={onDiagnostics}>
+        预览诊断报告
+      </button>
     </div>
   );
 }
 
-export function ImportDetails({ job }: { job: ImportJob }) {
+export function ImportDetails({
+  job,
+  onRetry,
+  busy = false,
+}: {
+  job: ImportJob;
+  onRetry?: () => void;
+  busy?: boolean;
+}) {
   return (
     <div className="modal-content">
       <div className="import-counts">
@@ -1287,6 +1315,20 @@ export function ImportDetails({ job }: { job: ImportJob }) {
             <li key={i}>{e}</li>
           ))}
         </ul>
+      )}
+      {job.done && job.failed > 0 && onRetry && !!job.failedPaths?.length && (
+        <>
+          <button className="button" disabled={busy} onClick={onRetry}>
+            <RefreshCw size={14} />
+            重试失败项
+          </button>
+          {job.failed > job.failedPaths.length && (
+            <p className="subtle">
+              本次最多重试已记录的 {job.failedPaths.length}{" "}
+              个路径，其余请重新选择来源文件夹。
+            </p>
+          )}
+        </>
       )}
     </div>
   );

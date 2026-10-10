@@ -1,11 +1,14 @@
 ﻿[CmdletBinding()]
-param([switch]$DryRun)
+param([switch]$DryRun, [switch]$KeepQa)
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Split-Path $PSScriptRoot -Parent)).TrimEnd('\')
 $rootPrefix = $projectRoot + '\'
+$cleanupVersion = (Get-Content -LiteralPath ($rootPrefix + 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+if ($cleanupVersion -notmatch '^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$') { throw 'Invalid project version' }
 $cleanupDate = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'China Standard Time').ToString('yyyy-MM-dd')
 if (-not (Test-Path -LiteralPath ($rootPrefix + 'package.json')) -or -not (Test-Path -LiteralPath ($rootPrefix + 'src-tauri\Cargo.toml'))) { throw 'Not a Shiqian project directory' }
 $paths = @('qa', 'node_modules', 'src-tauri\target', 'src-tauri\tests\core-harness\target', 'dist', 'public\pdf-assets', 'src-tauri\gen', '.build', 'tsconfig.tsbuildinfo')
+if ($KeepQa) { $paths = @($paths | Where-Object { $_ -ne 'qa' }) }
 $running = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase) })
 $plans = @()
 foreach ($relative in $paths) {
@@ -48,9 +51,9 @@ if (-not $DryRun -and $totalFiles -gt 0) {
         '', ('合计删除 {0} 个文件，{1} 字节，约 {2:F2} GiB。数字为逻辑大小，不等于磁盘实际占用。' -f $totalFiles, $totalBytes, ($totalBytes / 1GB)), '',
         '删除前核对绝对路径在项目内、无目录链接、无运行中的目标程序；采用 PowerShell 原生操作，删除后逐项确认目标不存在。', '',
         '保留源码、锁文件、测试脚本、归档证据、文档截图、.git 历史、全部 releases 交付版本、packages 本地归档及 local-only 素材。运行中的发布程序及正式用户资料库未操作。', '',
-        'QA 目录中的合成资料和临时运行副本已删除；真实用户应用数据目录不属于本次范围。', '',
-        '后续开发先运行 npm ci，再运行 npm run desktop。Rust 缓存已清理，首次编译会比增量构建慢。安装包仍可直接从 releases/v0.3.0-beta.1 使用。', '',
+        $(if ($KeepQa) { '本轮保留 QA 目录，仅清理可再生成开发缓存；真实用户应用数据目录不属于本次范围。' } else { 'QA 目录中的合成资料和临时运行副本已删除；真实用户应用数据目录不属于本次范围。' }), '',
+        ('后续开发先运行 npm ci，再运行 npm run desktop。Rust 缓存已清理，首次编译会比增量构建慢。安装包仍可直接从 releases/v' + $cleanupVersion + ' 使用。'), '',
         '复用清理脚本：scripts/clean-local.ps1 -DryRun 预览；去掉 -DryRun 执行。固定生成目录之外的内容不会删除，遇到目录链接停止，遇到目标下的运行程序保留该目标。'
     )
-    [IO.File]::WriteAllLines(($rootPrefix + 'docs\cleanup-' + $cleanupDate + '.md'), $report, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllLines(($rootPrefix + 'docs\cleanup-' + $cleanupDate + '-' + $cleanupVersion + '.md'), $report, [Text.UTF8Encoding]::new($false))
 }

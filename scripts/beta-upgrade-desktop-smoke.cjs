@@ -3,7 +3,7 @@ const assert = require("node:assert/strict"),
   path = require("node:path");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 (async () => {
-  const b = await chromium.connectOverCDP("http://127.0.0.1:9223"),
+  const b = await chromium.connectOverCDP(`http://127.0.0.1:${process.env.SHIQIAN_CDP_PORT || "9223"}`),
     p = b
       .contexts()[0]
       .pages()
@@ -16,11 +16,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     );
   const boot = await api("bootstrap");
   const root = path.resolve(__dirname, ".."),
-    qa = path.join(root, "qa", "beta-upgrade");
+    qa = path.join(root, "qa", process.env.BETA_UPGRADE_DIR || "beta-upgrade");
   assert.ok(path.resolve(boot.dataPath).startsWith(qa + path.sep));
   fs.mkdirSync(qa, { recursive: true });
   if (process.env.BETA_PHASE === "seed") {
-    assert.equal(boot.version, "0.3.0-alpha.17");
+    assert.equal(
+      boot.version,
+      process.env.BETA_BASE_VERSION || "0.3.0-alpha.17",
+    );
     assert.equal(boot.counts.all, 0);
     const source = path.join(qa, "升级验证.txt");
     fs.writeFileSync(source, "isolated upgrade content");
@@ -51,10 +54,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       path: path.join(qa, "before-beta.sqtagbackup"),
     });
     console.log(
-      "PASS alpha17 fixture: file/tag/note/theme/sidebar/backup persisted",
+      `PASS ${boot.version} fixture: file/tag/note/theme/sidebar/backup persisted`,
     );
   } else {
-    assert.equal(boot.version, "0.3.0-beta.1");
+    assert.equal(boot.version, process.env.BETA_VERSION || "0.3.0-beta.1");
     assert.equal(boot.counts.all, 1);
     assert.equal(boot.settings.theme, "dark");
     assert.equal(boot.settings.sidebarWidth, 260);
@@ -84,7 +87,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
     assert.ok(fs.existsSync(restored.recoveryBackup));
     assert.equal((await api("file", { id: f.id })).note, expected.note);
     console.log(
-      "PASS alpha17 -> beta1: identical persisted file annotations/settings + old backup inspect/restore + automatic safety backup",
+      `PASS ${process.env.BETA_BASE_VERSION || "0.3.0-alpha.17"} -> ${boot.version}: identical persisted file annotations/settings + old backup inspect/restore + automatic safety backup`,
     );
   }
   await b.close();

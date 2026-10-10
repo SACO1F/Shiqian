@@ -8,6 +8,34 @@ use serde_json::{json, Value};
 use std::{collections::HashSet, path::Path};
 
 impl Store {
+    pub fn create_workspace_tag(&mut self, name: &str) -> Result<Tag> {
+        let mut pins = string_list(&self.floating_presets()?, "ids");
+        self.conn
+            .execute_batch("SAVEPOINT workspace_tag")
+            .map_err(sql_err)?;
+        let result = (|| {
+            let tag = self.create_tag(name)?;
+            if tag.created_by != "folder" && !pins.contains(&tag.id) {
+                pins.push(tag.id.clone());
+                self.save_floating_presets(&pins)?;
+            }
+            Ok(tag)
+        })();
+        match result {
+            Ok(tag) => {
+                self.conn
+                    .execute_batch("RELEASE workspace_tag")
+                    .map_err(sql_err)?;
+                Ok(tag)
+            }
+            Err(error) => {
+                let _ = self
+                    .conn
+                    .execute_batch("ROLLBACK TO workspace_tag; RELEASE workspace_tag");
+                Err(error)
+            }
+        }
+    }
     pub fn floating_presets(&mut self) -> Result<Value> {
         let saved: Option<String> = self
             .conn

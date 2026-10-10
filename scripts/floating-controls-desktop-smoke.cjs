@@ -31,6 +31,12 @@ const root = path.resolve(__dirname, "..");
         .resolve((await api("bootstrap")).dataPath)
         .startsWith(path.join(root, "qa") + path.sep),
     );
+    if (process.env.BETA_SEED_PRESETS === "1") {
+      const ids = [];
+      for (let index = 0; index < 10; index++)
+        ids.push((await api("tag.create", { name: `测试标签 ${index}` })).id);
+      await api("floating.save", { ids });
+    }
     await api("floating.open");
     let palette;
     const findPalette = async () => {

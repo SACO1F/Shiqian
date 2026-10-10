@@ -1,0 +1,60 @@
+.warm-tooltip-anchor {
+  display: inline-flex;
+}
+.warm-tooltip {
+  position: fixed;
+  z-index: 130;
+  pointer-events: none;
+  padding: 8px 12px;
+  max-width: calc(100vw - 16px);
+  border-radius: 12px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--panel) 94%, #dbcbb4 6%);
+  border: 1px solid var(--control-edge, #00000012);
+  box-shadow: 0 4px 16px #00000012;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  backdrop-filter: blur(16px);
+  opacity: 0;
+  transform: translateY(-3px) scale(0.96);
+  transition:
+    opacity 120ms ease,
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.warm-tooltip[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  animation: warm-tooltip-enter 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes warm-tooltip-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.app-shell .top-leading-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.app-shell .content-meta .selection-actions button {
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .warm-tooltip,
+  .warm-tooltip[data-visible="true"] {
+    transition: none;
+    animation: none;
+    transform: none;
+  }
+}
