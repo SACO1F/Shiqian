@@ -18,6 +18,16 @@ class ReleaseGates(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Version mismatch"):
             release.validate_versions(root, "0.3.0-beta.2")
 
+    def test_formal_stable_package_stops_before_version_or_asset_writes(self):
+        import subprocess
+        with patch.object(release.sys, "argv", ["package-release.py", "--version", "0.3.0"]), patch.object(release.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "stable-release-gate.py")) as gate, patch.object(release, "validate_versions") as versions:
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.main()
+            gate.assert_called_once()
+            self.assertTrue(gate.call_args.kwargs["check"])
+            self.assertTrue(str(gate.call_args.args[0][1]).endswith("stable-release-gate.py"))
+            versions.assert_not_called()
+
     def test_root_lock_mismatch_is_rejected(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

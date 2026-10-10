@@ -4,14 +4,14 @@
   <p><strong>顺手贴上标签，随时找回灵感。</strong></p>
   <p>一个围绕本地文件、多标签与轻量浮窗设计的 Windows 资料整理工具。</p>
   <p>
-    <img alt="版本 0.3.0-beta.12" src="https://img.shields.io/badge/version-0.3.0--beta.12-527565" />
+    <img alt="正式可用 0.3.0-rc.4" src="https://img.shields.io/badge/release-0.3.0--rc.4-527565" />
     <img alt="Windows 11 x64" src="https://img.shields.io/badge/platform-Windows%2011%20x64-607D8B" />
     <img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24C8D8" />
     <img alt="本地资料库" src="https://img.shields.io/badge/data-local%20first-8B7AA8" />
   </p>
   <p>
-    <a href="docs/beta-v0.3-beta12.md">Beta.12 使用与修复指南</a> ·
-    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.12"><strong>Beta.12 下载</strong></a> ·
+    <a href="docs/user-manual-v0.3.zh-CN.md">使用说明</a> ·
+    <a href="https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-rc.4"><strong>正式可用版下载</strong></a> ·
     <a href="docs/desktop-guide.md">使用与开发指南</a> ·
     <a href="docs/roadmap.md">开发路线</a> ·
     <a href="docs/agent-integration.md">Agent 结合分析</a>
@@ -20,7 +20,7 @@
 
 ---
 
-> **当前本地候选：v0.3.0-beta.12。** 修复侧栏分隔条偶发绿色焦点框，并合入首次启动 AI 提醒和使用说明。见[候选说明](docs/beta-v0.3-beta12.md)、[验证记录](docs/validation-v0.3-beta12.md)及[文件预览研究](docs/file-preview-research-2026-10-10.md)。安装包见 [GitHub Beta.12 预发布](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.12)。
+> **当前推荐使用版本：v0.3.0-rc.4。** 本版本作为正式可用版本发布，安装包保留 RC.4 版本号。包含资料包按原父文件夹分类、详情聚焦、图标与标签尺寸稳定、列数切换动效和连续窗口缩放修复。见[更新说明](docs/release-v0.3-rc4.md)、[验证结果](docs/validation-v0.3-rc4.md)、[同事交接](docs/colleague-handoff-v0.3.zh-CN.md)与[已知限制](docs/known-issues-v0.3.md)。部分实机验收仍待完成，记录保持原状。
 
 ## 把标签，贴到文件上
 
@@ -73,12 +73,12 @@ Beta.2 新增后台任务入口，可在资料包校验和复制期间继续搜�
 
 ## 开始使用
 
-前往 [v0.3.0-beta.9 下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-beta.9)。本地最新候选位于 `releases/v0.3.0-beta.10/`；确认实机验收边界后再分发。
+前往 [正式可用版下载页](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-rc.4)，日常使用建议选择 Windows x64 安装包。
 
 | 下载                                                                                                                                | 适合谁                                                     |
 | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [Windows x64 安装包](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-beta.9/Shiqian-v0.3.0-beta.9-Windows-x64-setup.exe) | 推荐给日常使用者；按当前用户安装并检查 WebView2 Runtime    |
-| [单独运行的 EXE](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-beta.9/Shiqian-v0.3.0-beta.9-Windows-x64.exe)           | 系统已具备 WebView2 时可直接运行；仍使用用户应用数据目录   |
+| [Windows x64 安装包](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-rc.4/Shiqian-v0.3.0-rc.4-Windows-x64-setup.exe) | 推荐给日常使用者；按当前用户安装并检查 WebView2 Runtime    |
+| [单独运行的 EXE](https://github.com/SACO1F/Shiqian/releases/download/v0.3.0-rc.4/Shiqian-v0.3.0-rc.4-Windows-x64.exe)           | 系统已具备 WebView2 时可直接运行；仍使用用户应用数据目录   |
 | 使用说明、验收记录、源码与 SHA256SUMS                                                                                               | 同一下载页提供；源码面向开发者，校验文件用于核对下载完整性 |
 
 安装或升级前退出工作台和标签浮窗，升级前导出标注备份。缺少 WebView2 的电脑可能需要联网完成依赖安装。运行环境就绪后，核心文件整理功能无需联网，也无需账号；可选 AI 功能需要配置模型服务。历史版本保存在 [Releases](https://github.com/SACO1F/Shiqian/releases)。

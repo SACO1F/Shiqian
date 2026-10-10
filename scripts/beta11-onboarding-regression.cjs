@@ -28,14 +28,14 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
         { action, payload },
       );
     const boot = await api("bootstrap");
-    const qa = path.resolve(__dirname, "../qa/beta12-onboarding");
+    const qa = path.resolve(__dirname, "../qa/" + (process.env.BETA_QA_DIR || "beta12-onboarding"));
     assert.equal(
       path.resolve(boot.dataPath),
       mock
         ? path.resolve("C:/synthetic/beta12-onboarding")
         : path.join(qa, "library"),
     );
-    assert.equal(boot.version, "0.3.0-beta.12");
+    assert.equal(boot.version, process.env.BETA_VERSION || "0.3.0-beta.12");
     const errors = [];
     p.on("pageerror", (e) => errors.push(String(e)));
     const key = "shiqian-onboarding:v1:" + boot.dataPath;

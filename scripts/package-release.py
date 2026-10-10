@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 import zipfile
 
@@ -52,10 +53,17 @@ def main():
     version = args.version
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?", version):
         raise ValueError("Invalid release version")
+    if version == "0.3.0":
+        subprocess.run([sys.executable, str(root / "scripts/stable-release-gate.py")], check=True)
     validate_versions(root, version)
     mappings = {"0.3.0-beta.1": "beta1", "0.3.0-beta.2": "beta2", "0.3.0-beta.3": "beta3", "0.3.0-beta.4": "beta4", "0.3.0-beta.5": "beta5", "0.3.0-beta.6": "beta6", "0.3.0-beta.7": "beta7", "0.3.0-beta.8": "beta8", "0.3.0-beta.9": "beta9"}
     mappings["0.3.0-beta.10"] = "beta10"
     mappings["0.3.0-beta.12"] = "beta12"
+    mappings["0.3.0-rc.1"] = "rc1"
+    mappings["0.3.0-rc.2"] = "rc2"
+    mappings["0.3.0-rc.3"] = "rc3"
+    mappings["0.3.0-rc.4"] = "rc4"
+    mappings["0.3.0"] = "stable"
     if version not in mappings:
         raise ValueError("Add matching guide/validation mappings for this release")
     suffix = mappings[version]
@@ -80,17 +88,36 @@ def main():
             shutil.copy2(source, target)
     # Documentation names are explicit for the current Beta; new versions must
     # provide their own guide instead of silently copying unrelated release text.
-    guide = (root / ("docs/beta-v0.3-" + suffix + ".md")).read_text(encoding="utf-8")
+    guide_name = "release-v0.3-" + suffix + ".md" if (suffix.startswith("rc") or suffix == "stable") else "beta-v0.3-" + suffix + ".md"
+    extras = {
+        "user-manual-v0.3.zh-CN.md": "manual.zh-CN.md",
+        "upgrade-v0.3.zh-CN.md": "upgrade.zh-CN.md",
+        "known-issues-v0.3.md": "known-issues.zh-CN.md",
+        "stable-release-acceptance.md": "acceptance.zh-CN.md",
+        "THIRD_PARTY_NOTICES.md": "third-party-notices.md",
+        "colleague-handoff-v0.3.zh-CN.md": "handoff.zh-CN.md",
+    } if (suffix.startswith("rc") or suffix == "stable") else {}
+    def delivery_links(text):
+        replacements = {guide_name: "guide.zh-CN.md", "validation-v0.3-" + suffix + ".md": "validation.zh-CN.md", **extras}
+        for source, destination in replacements.items():
+            text = text.replace("(" + source + ")", "(" + prefix + "-" + destination + ")")
+        return text
+    guide = (root / "docs" / guide_name).read_text(encoding="utf-8")
+    guide = delivery_links(guide)
     guide = guide.replace("(validation-v0.3-" + suffix + ".md)", "(" + prefix + "-validation.zh-CN.md)")
     guide = re.sub(r"!\[资料包导入预览\]\(images/[^)]+\)\n\n", "", guide)
     guide = guide.replace("开发格式与 API 约定见 [资料包格式 v1](transfer-package-format-v1.md)。", "开发格式与 API 约定保存在源码快照的 docs/transfer-package-format-v1.md。")
     (release / (prefix + "-guide.zh-CN.md")).write_text(guide, encoding="utf-8")
     validation = (root / ("docs/validation-v0.3-" + suffix + ".md")).read_text(encoding="utf-8")
+    validation = delivery_links(validation)
     validation = validation.replace("(beta-v0.3-" + suffix + ".md)", "(" + prefix + "-guide.zh-CN.md)")
     if suffix == "beta10":
         validation = validation.replace("[RC 实机清单](beta10-rc-checklist.md)", "RC 实机清单（源码快照内 `docs/beta10-rc-checklist.md`）")
     validation = re.sub(r"\[([^]]+)\]\((evidence/[^)]+)\)", r"\1（源码快照内 `docs/\2`）", validation)
     (release / (prefix + "-validation.zh-CN.md")).write_text(validation, encoding="utf-8")
+    for source, destination in extras.items():
+        path = root / source if source == "THIRD_PARTY_NOTICES.md" else root / "docs" / source
+        (release / (prefix + "-" + destination)).write_text(delivery_links(path.read_text(encoding="utf-8")), encoding="utf-8")
     files = subprocess.check_output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], cwd=root).decode("utf-8").split("\0")
     excluded = {".git", "node_modules", "target", "qa", "local-only", ".build", "releases", "packages", "dist"}
     archive = release / (prefix + "-source.zip")
@@ -98,7 +125,7 @@ def main():
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
         for name in sorted(set(files)):
             # The delivery verification record is produced after ZIP creation.
-            if not name or re.fullmatch(r"docs/evidence/beta\d*-delivery\.log", name):
+            if not name or re.fullmatch(r"docs/evidence/(?:beta\d*|rc\d*|stable)-delivery\.log", name):
                 continue
             path = root / name
             if excluded.intersection(Path(name).parts) or path.suffix.lower() in {".sqlite", ".db", ".dpapi", ".sqtagbackup", ".sqtagpack", ".pem", ".key"} or path.name.startswith(".env"):

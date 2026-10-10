@@ -37,11 +37,7 @@ function GalleryCard({
   useLayoutEffect(() => {
     // Loading a preview can change its ratio without re-rendering the gallery.
     // Update positions in the same commit, before the newly taller image paints.
-    if (card.current)
-      onSizeChange(
-        index,
-        Math.round(card.current.getBoundingClientRect().height),
-      );
+    if (card.current) onSizeChange(index, card.current.offsetHeight);
   }, [ratio, index, onSizeChange]);
   return (
     <>
@@ -119,7 +115,11 @@ function GalleryCard({
             )}
           </span>
         </span>
-        {!visual && <span className="gallery-document-name">{file.name}</span>}
+        {!visual && (
+          <span className="gallery-document-name">
+            <span className="gallery-document-title">{file.name}</span>
+          </span>
+        )}
       </button>
     </>
   );
@@ -136,6 +136,9 @@ export function MasonryGallery({
   onOpen,
   initialOffset,
   measurements,
+  focusRequest,
+  motionSnapshot,
+  liveResize,
 }: {
   files: LocalFile[];
   scroll: RefObject<HTMLDivElement | null>;
@@ -147,6 +150,9 @@ export function MasonryGallery({
   onOpen: (file: LocalFile) => void;
   initialOffset: number;
   measurements: RefObject<Map<string, { width: number; height: number }>>;
+  focusRequest: RefObject<string | undefined>;
+  motionSnapshot: RefObject<Map<string, DOMRect>>;
+  liveResize: RefObject<boolean>;
 }) {
   const columnWidth = Math.max(1, (width - gap * (columns - 1)) / columns);
   const gallery = useRef<HTMLDivElement>(null);
@@ -167,7 +173,7 @@ export function MasonryGallery({
       );
     },
     lanes: columns,
-    laneAssignmentMode: "measured",
+    laneAssignmentMode: "estimate",
     gap,
     overscan: columns * 2,
   });
@@ -188,23 +194,105 @@ export function MasonryGallery({
     [virtual, files, columnWidth, measurements],
   );
   useLayoutEffect(() => {
-    // A geometry change invalidates heights for off-screen cards too. Rebuild
-    // the estimates, then restore mounted cards' actual heights before paint.
-    // Clearing measurements in a passive effect can discard the ResizeObserver
-    // result without another DOM resize to trigger a replacement measurement.
-    virtual.measure();
+    // Width changes update heights, not lane identity. Resetting measure()
+    // each frame also cleared lane assignments and made cards jump sideways.
+    // The virtualizer resets lanes itself when the column count changes.
     virtual.getTotalSize();
+    files.forEach((file, index) => {
+      const cached = measurements.current.get(previewKey(file));
+      const height =
+        cached && Math.abs(cached.width - columnWidth) < 1
+          ? cached.height
+          : Math.min(1200, Math.max(64, columnWidth / previewRatio(file))) +
+            (file.kind === "image" || file.kind === "pdf" ? 0 : 44);
+      virtual.resizeItem(index, height);
+    });
     gallery.current
       ?.querySelectorAll<HTMLDivElement>(".masonry-item")
       .forEach((element) => {
         // Read directly even while scrolling; measureElement may use its cache
         // or defer to ResizeObserver during a user scroll.
-        virtual.resizeItem(
-          Number(element.dataset.index),
-          Math.round(element.getBoundingClientRect().height),
-        );
+        virtual.resizeItem(Number(element.dataset.index), element.offsetHeight);
       });
-  }, [columnWidth, columns, gap, virtual]);
+  }, [columnWidth, columns, gap, virtual, files, measurements]);
+  useLayoutEffect(() => {
+    const requested = focusRequest.current;
+    focusRequest.current = undefined;
+    if (requested) {
+      const index = files.findIndex((file) => file.id === requested);
+      if (index >= 0)
+        virtual.scrollToIndex(index, { align: "center", behavior: "auto" });
+    }
+    const snapshot = new Map(motionSnapshot.current);
+    motionSnapshot.current.clear();
+    if (
+      liveResize.current ||
+      !snapshot.size ||
+      matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    const animations: Animation[] = [];
+    const frame = requestAnimationFrame(() => {
+      gallery.current
+        ?.querySelectorAll<HTMLButtonElement>(".masonry-card")
+        .forEach((card) => {
+          const before = snapshot.get(card.dataset.fileId || "");
+          if (!before) return;
+          const after = card.getBoundingClientRect();
+          if (after.width <= 0 || after.height <= 0) return;
+          const sx = before.width / after.width;
+          const sy = before.height / after.height;
+          const timing = {
+            duration: 300,
+            easing: "cubic-bezier(0.42, 0, 0.58, 1)",
+          };
+          const start = document.timeline.currentTime;
+          const motion = card.animate(
+            [
+              {
+                transform: `translate(${before.left - after.left}px, ${before.top - after.top}px) scale(${sx}, ${sy})`,
+              },
+              { transform: "translate(0, 0) scale(1, 1)" },
+            ],
+            timing,
+          );
+          motion.startTime = start;
+          animations.push(motion);
+          // Image/frame geometry changes, but the UI inside must retain its
+          // type size and icon proportions. A sampled reciprocal follows the
+          // parent scale throughout the same eased timeline, not just at its
+          // endpoints. Individual `scale` preserves hover/check transforms.
+          const compensation = Array.from({ length: 65 }, (_, index) => {
+            const progress = index / 64;
+            return {
+              offset: progress,
+              scale: `${1 / (sx + (1 - sx) * progress)} ${1 / (sy + (1 - sy) * progress)}`,
+            };
+          });
+          card
+            .querySelectorAll<HTMLElement | SVGElement>(
+              ".preview-placeholder > svg, .extension-stamp, .gallery-tag, .gallery-caption > .file-name, .gallery-document-title, .favorite-mark, .selection-check, .gallery-ai-mark, .gallery-status",
+            )
+            .forEach((element) => {
+              const counter = element.animate(compensation, timing);
+              counter.startTime = start;
+              animations.push(counter);
+            });
+        });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      animations.forEach((animation) => animation.cancel());
+    };
+  }, [
+    columnWidth,
+    columns,
+    gap,
+    virtual,
+    focusRequest,
+    motionSnapshot,
+    liveResize,
+  ]);
   return (
     <div
       ref={gallery}
@@ -217,6 +305,7 @@ export function MasonryGallery({
           key={item.key}
           ref={virtual.measureElement}
           data-index={item.index}
+          data-lane={item.lane}
           className="masonry-item"
           style={{
             width: columnWidth,

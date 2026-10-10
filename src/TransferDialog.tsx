@@ -3,6 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Download, Upload, FolderOpen, RefreshCw } from "lucide-react";
 import { api, message, size, Tag, type TransferStatus } from "./api";
 import { Modal } from "./components";
+import { GlideSelect } from "./GlideSelect";
 import { TaskGlyph } from "./TaskStatus";
 import { TransferProgress } from "./TaskPanel";
 
@@ -176,27 +177,31 @@ export function TransferDialog({
             <p className="muted">
               {isExport
                 ? "原文件、标签、备注与收藏一起交接。"
-                : "复制到新文件夹，并加入当前资料库。"}
+                : "按原文件夹归类复制，并加入当前资料库。"}
             </p>
             {isExport && (
               <label className="transfer-field">
                 <span>交接范围</span>
-                <select
-                  aria-label="资料包范围"
+                <GlideSelect
+                  ariaLabel="资料包范围"
                   value={tagId}
                   disabled={busy || ids.length > 0}
-                  onChange={(e) => setTagId(e.target.value)}
-                >
-                  <option value="">
-                    {ids.length ? `所选 ${ids.length} 个文件` : "全部文件"}
-                  </option>
-                  {!ids.length &&
-                    tags.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} · {t.count}
-                      </option>
-                    ))}
-                </select>
+                  onChange={setTagId}
+                  options={[
+                    {
+                      value: "",
+                      label: ids.length
+                        ? `所选 ${ids.length} 个文件`
+                        : "全部文件",
+                    },
+                    ...(!ids.length
+                      ? tags.map((t) => ({
+                          value: t.id,
+                          label: `${t.name} · ${t.count}`,
+                        }))
+                      : []),
+                  ]}
+                />
               </label>
             )}
             <label className="transfer-field">

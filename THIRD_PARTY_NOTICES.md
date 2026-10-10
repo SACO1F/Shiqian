@@ -1,6 +1,6 @@
 # Third-party software notices
 
-拾签 0.3.0-alpha.1 includes open-source components. The following license and notice texts accompany the locked build dependencies. Entries may include development or platform-specific dependencies that are not present in every binary.
+拾签 0.3.0-rc.4 includes open-source components. The following license and notice texts accompany the locked build dependencies. Entries may include development or platform-specific dependencies that are not present in every binary.
 
 ## @napi-rs/canvas 1.0.9 / LICENSE
 

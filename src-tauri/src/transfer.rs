@@ -116,6 +116,8 @@ impl Control {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Entry {
     name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent_folder: Option<String>,
     entry: String,
     bytes: u64,
     sha256: String,
@@ -271,7 +273,7 @@ pub fn export(plan: Plan, path: &Path, expected: &str, control: &Control) -> Res
         .ok_or_else(|| err("TRANSFER_PATH", "请选择保存位置"))?;
     let mut output = tempfile::NamedTempFile::new_in(parent).map_err(|e| err("TRANSFER_IO", e))?;
     let mut manifest = Manifest {
-        format: 1,
+        format: 2,
         package_id: id(),
         app_version: env!("CARGO_PKG_VERSION").into(),
         created_at: now(),
@@ -307,6 +309,14 @@ pub fn export(plan: Plan, path: &Path, expected: &str, control: &Control) -> Res
             control.completed.store((i + 1) as u64, Ordering::SeqCst);
             manifest.files.push(Entry {
                 name: f.name.clone(),
+                parent_folder: Some(
+                    Path::new(&f.parent)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .filter(|n| safe_name(n))
+                        .unwrap_or("未分类")
+                        .to_owned(),
+                ),
                 entry,
                 bytes: before.len(),
                 sha256: hash,
@@ -382,7 +392,7 @@ fn inspect(path: &Path, control: &Control) -> Result<(ZipArchive<File>, Manifest
     let m: Manifest = serde_json::from_slice(&content).map_err(|e| err("INVALID_PACKAGE", e))?;
     if !valid_time(m.created_at)
         || m.app_version.len() > 100
-        || m.format != 1
+        || ![1, 2].contains(&m.format)
         || uuid::Uuid::parse_str(&m.package_id).is_err()
         || m.files.is_empty()
         || m.files.len() > MAX_FILES
@@ -394,6 +404,11 @@ fn inspect(path: &Path, control: &Control) -> Result<(ZipArchive<File>, Manifest
     let mut total = 0u64;
     for (i, f) in m.files.iter().enumerate() {
         if !safe_name(&f.name)
+            || (m.format == 2 && f.parent_folder.is_none())
+            || f.parent_folder
+                .as_ref()
+                .map(|name| !safe_name(name))
+                .unwrap_or(false)
             || f.entry != format!("files/{i:05}/{}", f.name)
             || !expected.insert(f.entry.clone())
             || f.sha256.len() != 64
@@ -569,12 +584,55 @@ fn prepare_import(
         prepared.manifest.files.iter().map(|f| f.bytes).sum(),
         prepared.manifest.files.len(),
     );
+    let mut used_paths = HashSet::new();
     for (i, f) in prepared.manifest.files.iter().enumerate() {
         control.check()?;
-        let directory = prepared.folder.join(format!("{:05}", i + 1));
-        fs::create_dir(&directory).map_err(|e| err("TRANSFER_IO", e))?;
-        prepared.directories.push(directory.clone());
-        let target = directory.join(&f.name);
+        // v2 stores only the direct parent name, never the sender's absolute path.
+        // Legacy v1 packages can recover a category from their folder-origin tag.
+        let folder_name = f
+            .parent_folder
+            .as_deref()
+            .or_else(|| {
+                f.tags
+                    .iter()
+                    .find(|t| t.source == "folder" && safe_name(&t.name))
+                    .map(|t| t.name.as_str())
+            })
+            .unwrap_or("未分类");
+        let directory = prepared.folder.join(folder_name);
+        if !prepared
+            .directories
+            .iter()
+            .any(|p| key(&p.to_string_lossy()) == key(&directory.to_string_lossy()))
+        {
+            fs::create_dir(&directory).map_err(|e| err("TRANSFER_IO", e))?;
+            prepared.directories.push(directory.clone());
+        }
+        let mut target = directory.join(&f.name);
+        let mut suffix = 2;
+        while !used_paths.insert(key(&target.to_string_lossy())) {
+            let original = Path::new(&f.name);
+            let stem = original
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&f.name);
+            let mut extension = original
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|s| format!(".{s}"))
+                .unwrap_or_default();
+            // Truncate on a Unicode boundary to keep the collision name portable.
+            while extension.len() > 200 {
+                extension.pop();
+            }
+            let tail = format!(" ({suffix}){extension}");
+            let mut short = stem.to_owned();
+            while short.len() + tail.len() > 240 {
+                short.pop();
+            }
+            target = directory.join(format!("{short}{tail}"));
+            suffix += 1;
+        }
         let mut out = File::options()
             .create_new(true)
             .write(true)

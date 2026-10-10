@@ -161,8 +161,10 @@ export function FilesView({
   view,
   density,
   galleryColumns,
+  layoutCapture,
   onColumnCapacity,
   selected,
+  focusOnResize,
   onSelect,
   onOpen,
   onMore,
@@ -177,8 +179,10 @@ export function FilesView({
   view: string;
   density: string;
   galleryColumns: number;
+  layoutCapture: React.RefObject<(() => void) | undefined>;
   onColumnCapacity: (capacity: number) => void;
   selected: string[];
+  focusOnResize: boolean;
   onSelect: (f: LocalFile, e: React.MouseEvent) => void;
   onOpen: (f: LocalFile) => void;
   onMore: () => void;
@@ -195,6 +199,9 @@ export function FilesView({
   const measurements = useRef(
     new Map<string, { width: number; height: number }>(),
   );
+  const focusRequest = useRef<string | undefined>(undefined);
+  const motionSnapshot = useRef(new Map<string, DOMRect>());
+  const liveResize = useRef(false);
   const [width, setWidth] = useState(700);
   useLayoutEffect(() => {
     if (!scroll.current) return;
@@ -206,10 +213,42 @@ export function FilesView({
         parseFloat(style.paddingRight),
     );
     element.scrollTop = offsets.current[view] ?? 0;
-    const obs = new ResizeObserver((es) => setWidth(es[0].contentRect.width));
+    const capture = () => {
+      motionSnapshot.current.clear();
+      element
+        .querySelectorAll<HTMLButtonElement>(".masonry-card")
+        .forEach((card) => {
+          if (card.dataset.fileId)
+            motionSnapshot.current.set(
+              card.dataset.fileId,
+              card.getBoundingClientRect(),
+            );
+        });
+    };
+    layoutCapture.current = capture;
+    let endResize: ReturnType<typeof setTimeout>;
+    const resizing = () => {
+      liveResize.current = true;
+      motionSnapshot.current.clear();
+      clearTimeout(endResize);
+      endResize = setTimeout(() => {
+        liveResize.current = false;
+      }, 160);
+    };
+    window.addEventListener("resize", resizing);
+    const obs = new ResizeObserver((es) => {
+      if (liveResize.current) motionSnapshot.current.clear();
+      else capture();
+      setWidth(es[0].contentRect.width);
+    });
     obs.observe(element);
-    return () => obs.disconnect();
-  }, [view]);
+    return () => {
+      obs.disconnect();
+      clearTimeout(endResize);
+      window.removeEventListener("resize", resizing);
+      layoutCapture.current = undefined;
+    };
+  }, [view, layoutCapture]);
   const capacity = Math.max(2, Math.min(8, Math.floor((width + 14) / 134)));
   useEffect(() => onColumnCapacity(capacity), [capacity, onColumnCapacity]);
   const rowHeight = density === "compact" ? 58 : 68;
@@ -320,10 +359,16 @@ export function FilesView({
                 columns={Math.min(galleryColumns, capacity)}
                 gap={density === "compact" ? 10 : 18}
                 selected={selected}
-                onSelect={onSelect}
+                onSelect={(file, event) => {
+                  if (focusOnResize) focusRequest.current = file.id;
+                  onSelect(file, event);
+                }}
                 onOpen={onOpen}
                 initialOffset={offsets.current.grid ?? 0}
                 measurements={measurements}
+                focusRequest={focusRequest}
+                motionSnapshot={motionSnapshot}
+                liveResize={liveResize}
               />
             ) : (
               <div

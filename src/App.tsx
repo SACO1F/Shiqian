@@ -145,6 +145,7 @@ export default function App() {
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const anchor = useRef("");
+  const galleryLayoutCapture = useRef<(() => void) | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const loadLock = useRef(false);
   const request = useRef(0);
@@ -616,6 +617,7 @@ export default function App() {
       .catch((error) => tell(`偏好保存失败：${message(error)}`, true));
   };
   const changeColumns = (columns: number) => {
+    galleryLayoutCapture.current?.();
     setGalleryColumns(columns);
     setSetting("galleryColumns", columns);
   };
@@ -1478,14 +1480,20 @@ export default function App() {
         )}
         <div className="content-meta">
           <div>
-            {loading ? (
-              <LoaderCircle size={13} className="spin" />
-            ) : (
-              <span className="tiny-dot" />
-            )}
-            {selected.length
-              ? `已选 ${selected.length} 项`
-              : `${results.total} 份文件`}
+            <span className="result-count" role="status" aria-live="polite">
+              <span className="result-count-indicator" aria-hidden="true">
+                <span className="tiny-dot" />
+                <LoaderCircle
+                  size={13}
+                  className={`spin ${loading ? "is-loading" : ""}`}
+                />
+              </span>
+              <span>
+                {selected.length
+                  ? `已选 ${selected.length} 项`
+                  : `${results.total} 份文件`}
+              </span>
+            </span>
             <div className="jelly-selection" role="group" aria-label="结果选择">
               <button
                 aria-label="全选当前结果"
@@ -1640,8 +1648,10 @@ export default function App() {
             view={view}
             density={density}
             galleryColumns={galleryColumns}
+            layoutCapture={galleryLayoutCapture}
             onColumnCapacity={setColumnCapacity}
             selected={selected}
+            focusOnResize={details && !inspectorVisible}
             onSelect={select}
             onOpen={openFile}
             onMore={() => fetchFiles(query, true)}

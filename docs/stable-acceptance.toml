@@ -1,0 +1,145 @@
+# Only record real-device results. Unit tests and same-machine synthetic checks do not complete these cases.
+target_version = "0.3.0"
+candidate_version = "0.3.0-rc.4"
+unresolved_blockers = 0
+
+[[case]]
+id = "I01"
+name = "干净 Windows 11 安装"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "I02"
+name = "缺少 WebView2 的安装"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "I03"
+name = "alpha.10 安装器覆盖升级"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "I04"
+name = "卸载保留数据后重装"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "D01"
+name = "旧新备份恢复与保护备份"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "D02"
+name = "另一台实体电脑资料交接"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "D03"
+name = "中文长路径/盘符/离线介质"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "D04"
+name = "系统权限/空间不足及异常退出"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "W01"
+name = "物理鼠标窗口操作与吸附"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "W02"
+name = "物理关闭及后台任务保存"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "W03"
+name = "桌面/资源管理器跨窗口拖拽"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "W04"
+name = "双屏混合 DPI"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "W05"
+name = "断屏和休眠唤醒"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+
+[[case]]
+id = "LONG_RUN"
+name = "八小时代表性使用"
+status = "pending"
+tester = ""
+date = ""
+environment = ""
+result = ""
+evidence = []
+duration_hours = 0

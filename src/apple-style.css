@@ -656,7 +656,6 @@
   opacity: 0;
   visibility: hidden;
   transition:
-    width 300ms cubic-bezier(0.22, 1, 0.36, 1),
     opacity 180ms ease,
     visibility 0s 300ms;
 }
@@ -671,7 +670,7 @@
   height: 100%;
   min-height: 0;
   transform: translateX(14px);
-  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: transform 300ms cubic-bezier(0.42, 0, 0.58, 1);
 }
 .inspector-reveal.is-open > .inspector {
   transform: translateX(0);
@@ -704,4 +703,48 @@
   .app-shell .sidebar-tags-expand {
     transition: none;
   }
+}
+
+/* Geometry commits once; card transforms ease between the old and new layouts. */
+.masonry-card {
+  transform-origin: top left;
+}
+.result-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 76px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.result-count-indicator {
+  position: relative;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+}
+.result-count-indicator > svg {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+.result-count-indicator > svg.is-loading {
+  opacity: 1;
+  transition-delay: 150ms;
+}
+.transfer-field > .glide-select {
+  width: 100%;
+}
+
+/* Keep filename text separate from the document footer's background geometry. */
+.gallery-document-title {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
 }

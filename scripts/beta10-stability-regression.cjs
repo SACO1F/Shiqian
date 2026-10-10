@@ -19,10 +19,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
       );
     const api = (action, payload = {}) => invoke("api", { action, payload });
     const boot = await api("bootstrap");
-    assert.equal(boot.version, "0.3.0-beta.10");
+    assert.equal(boot.version, process.env.BETA_VERSION || "0.3.0-beta.10");
     assert.equal(
       path.resolve(boot.dataPath),
-      path.resolve(__dirname, "../qa/beta10-ui/library"),
+      path.resolve(__dirname, "../qa/" + (process.env.BETA_QA_DIR || "beta10-ui") + "/library"),
     );
     const wait = async (fn, accept) => {
       for (let i = 0; i < 150; i++) {

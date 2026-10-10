@@ -436,3 +436,182 @@ fn transfer_supports_long_chinese_source_and_destination_paths() {
     assert_eq!(imported.name, "完整文件名.txt");
     assert_eq!(fs::read(&imported.path).unwrap(), b"long path content");
 }
+
+fn add_transfer_fixture_at(store: &mut Store, path: &Path, content: &[u8]) -> FileRecord {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, content).unwrap();
+    let meta = fsops::inspect(path).unwrap();
+    store.add_file_with_ai(&meta, false).unwrap();
+    let fid: String = store
+        .conn
+        .query_row("SELECT id FROM files WHERE path=?", [&meta.path], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    store.file(&fid).unwrap()
+}
+
+fn rewrite_transfer_manifest(
+    input: &Path,
+    output: &Path,
+    edit: impl FnOnce(&mut serde_json::Value),
+) {
+    use sha2::{Digest, Sha256};
+    use std::io::{Read, Write};
+    let mut archive = zip::ZipArchive::new(fs::File::open(input).unwrap()).unwrap();
+    let mut bytes = vec![];
+    archive
+        .by_name("manifest.json")
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    edit(&mut manifest);
+    let content = serde_json::to_vec(&manifest).unwrap();
+    let checksum = format!("{:x}", Sha256::digest(&content));
+    let mut output = zip::ZipWriter::new(fs::File::create(output).unwrap());
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let mut bytes = vec![];
+        entry.read_to_end(&mut bytes).unwrap();
+        let name = entry.name();
+        output
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        output
+            .write_all(match name {
+                "manifest.json" => &content,
+                "manifest.sha256" => checksum.as_bytes(),
+                _ => &bytes,
+            })
+            .unwrap();
+    }
+    output.finish().unwrap();
+}
+
+#[test]
+fn transfer_groups_three_pic_and_five_desktop_files_by_original_parent() {
+    let mut sender = Fixture::new();
+    for (folder, count) in [("Pic", 3), ("Desktop", 5)] {
+        for index in 0..count {
+            let path = sender.files.join(folder).join(format!("图片-{index}.txt"));
+            let file = add_transfer_fixture_at(
+                &mut sender.store,
+                &path,
+                format!("{folder}/{index}").as_bytes(),
+            );
+            // Original directory grouping must survive removing its automatic tag.
+            if index == 0 {
+                sender
+                    .store
+                    .conn
+                    .execute("DELETE FROM file_tags WHERE file_id=?", [&file.id])
+                    .unwrap();
+            }
+        }
+    }
+    let package = sender.pack(&[]);
+    let mut recipient = Fixture::new();
+    let preview = transfer::preview(&package, &Control::default()).unwrap();
+    let result = recipient
+        .store
+        .import_package(
+            &package,
+            &recipient.files.clone(),
+            preview["fingerprint"].as_str().unwrap(),
+            &Control::default(),
+        )
+        .unwrap();
+    let root = Path::new(result["path"].as_str().unwrap());
+    assert_eq!(fs::read_dir(root).unwrap().count(), 2);
+    for (folder, count) in [("Pic", 3), ("Desktop", 5)] {
+        assert_eq!(fs::read_dir(root.join(folder)).unwrap().count(), count);
+        for index in 0..count {
+            assert_eq!(
+                fs::read(root.join(folder).join(format!("图片-{index}.txt"))).unwrap(),
+                format!("{folder}/{index}").as_bytes()
+            );
+        }
+    }
+    assert_eq!(result["fileCount"], 8);
+    recipient.store.validate().unwrap();
+}
+
+#[test]
+fn transfer_same_folder_name_collisions_keep_both_files_and_contents() {
+    let mut sender = Fixture::new();
+    add_transfer_fixture_at(
+        &mut sender.store,
+        &sender.files.join("A/Pic/原图.txt"),
+        b"first",
+    );
+    add_transfer_fixture_at(
+        &mut sender.store,
+        &sender.files.join("B/Pic/原图.txt"),
+        b"second",
+    );
+    let package = sender.pack(&[]);
+    let mut recipient = Fixture::new();
+    let preview = transfer::preview(&package, &Control::default()).unwrap();
+    let result = recipient
+        .store
+        .import_package(
+            &package,
+            &recipient.files.clone(),
+            preview["fingerprint"].as_str().unwrap(),
+            &Control::default(),
+        )
+        .unwrap();
+    let folder = Path::new(result["path"].as_str().unwrap()).join("Pic");
+    assert_eq!(fs::read_dir(&folder).unwrap().count(), 2);
+    assert!(folder.join("原图.txt").is_file());
+    assert!(folder.join("原图 (2).txt").is_file());
+    let mut contents: Vec<_> = fs::read_dir(folder)
+        .unwrap()
+        .map(|f| fs::read(f.unwrap().path()).unwrap())
+        .collect();
+    contents.sort();
+    assert_eq!(contents, vec![b"first".to_vec(), b"second".to_vec()]);
+}
+
+#[test]
+fn transfer_legacy_v1_groups_folder_tags_and_rejects_unsafe_v2_folder() {
+    let mut sender = Fixture::new();
+    add_transfer_fixture_at(
+        &mut sender.store,
+        &sender.files.join("Pic/测试.txt"),
+        b"legacy",
+    );
+    let package = sender.pack(&[]);
+    let legacy = sender.files.join("legacy.sqtagpack");
+    rewrite_transfer_manifest(&package, &legacy, |m| {
+        m["format"] = json!(1);
+        for entry in m["files"].as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("parentFolder");
+        }
+    });
+    let mut recipient = Fixture::new();
+    let preview = transfer::preview(&legacy, &Control::default()).unwrap();
+    let result = recipient
+        .store
+        .import_package(
+            &legacy,
+            &recipient.files.clone(),
+            preview["fingerprint"].as_str().unwrap(),
+            &Control::default(),
+        )
+        .unwrap();
+    assert!(Path::new(result["path"].as_str().unwrap())
+        .join("Pic/测试.txt")
+        .is_file());
+    for name in ["../escape", "C:\\outside", "CON", ".."] {
+        let invalid = sender.files.join(format!("{}.sqtagpack", id()));
+        rewrite_transfer_manifest(&package, &invalid, |m| {
+            m["files"][0]["parentFolder"] = json!(name)
+        });
+        assert!(
+            transfer::preview(&invalid, &Control::default()).is_err(),
+            "{name}"
+        );
+    }
+}
