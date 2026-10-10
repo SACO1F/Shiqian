@@ -9,7 +9,7 @@
 
 ## 1. 获取、安装与首次启动
 
-本地交付目录：`releases/v0.3.0-rc.4/`。本轮未上传候选到 GitHub；获取时确认来源、版本及 SHA256。
+本地交付目录：`releases/v0.3.0-rc.4/`。本版作为正式可用版本发布于 [GitHub Release](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-rc.4)；获取时确认来源、版本及 SHA256。
 
 | 文件 | 用途 |
 |---|---|
@@ -248,7 +248,7 @@ RC.2 的原生最小化、最大化、还原、关闭后通过浮窗打开、选
 
 本次 alpha.10 / Beta.12 → RC.2 实际 EXE 数据兼容测试已通过，使用合成资料库，不涉及使用者真实资料。
 
-项目：[GitHub 仓库](https://github.com/SACO1F/Shiqian)。本轮 RC.2 为本地候选交付，未发布 GitHub Release。
+项目：[GitHub 仓库](https://github.com/SACO1F/Shiqian)。当前推荐版本 RC.4 已发布为正式可用版：[下载入口](https://github.com/SACO1F/Shiqian/releases/tag/v0.3.0-rc.4)。
 
 
 支持环境和限制见[已知限制](known-issues-v0.3.md)，本轮证据见[验证记录](validation-v0.3-rc4.md)。
